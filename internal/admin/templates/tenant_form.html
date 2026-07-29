@@ -1,0 +1,33 @@
+{{define "tenant_form"}}
+<div class="mb-6 rounded-xl border border-indigo-500/30 bg-gray-900 p-4">
+    <h3 class="mb-4 text-sm font-semibold text-indigo-400">{{if .Tenant.ID}}Edit Tenant{{else}}New Tenant{{end}}</h3>
+    <form hx-post="{{.Action}}" hx-target="{{.Target}}" hx-swap="{{.Swap}}" class="space-y-4">
+        <input type="hidden" name="id" value="{{.Tenant.ID}}">
+        <div class="grid grid-cols-2 gap-4">
+            <div>
+                <label class="mb-1 block text-sm font-medium text-gray-300">Name</label>
+                <input type="text" name="name" value="{{.Tenant.Name}}" required
+                    class="w-full rounded-lg border border-gray-700 bg-gray-800 px-3 py-2 text-sm text-white placeholder-gray-500 focus:border-indigo-500 focus:outline-none focus:ring-1 focus:ring-indigo-500">
+            </div>
+            <div>
+                <label class="mb-1 block text-sm font-medium text-gray-300">Description</label>
+                <input type="text" name="description" value="{{.Tenant.Description}}"
+                    class="w-full rounded-lg border border-gray-700 bg-gray-800 px-3 py-2 text-sm text-white placeholder-gray-500 focus:border-indigo-500 focus:outline-none focus:ring-1 focus:ring-indigo-500">
+            </div>
+        </div>
+        <div class="flex items-center gap-3">
+            <label class="flex items-center gap-2 text-sm text-gray-300">
+                <input type="checkbox" name="active" {{if .Tenant.Active}}checked{{end}}
+                    class="rounded border-gray-600 bg-gray-700 text-indigo-600 focus:ring-indigo-500">
+                Active
+            </label>
+        </div>
+        <div class="flex items-center gap-2">
+            <button type="submit"
+                class="rounded-lg bg-indigo-600 px-4 py-2 text-sm font-semibold text-white hover:bg-indigo-500 transition-colors">Save</button>
+            <button type="button" hx-get="/tenants/cancel" hx-target="#form-area" hx-swap="innerHTML"
+                class="rounded-lg bg-gray-700 px-4 py-2 text-sm font-medium text-gray-300 hover:bg-gray-600 transition-colors">Cancel</button>
+        </div>
+    </form>
+</div>
+{{end}}

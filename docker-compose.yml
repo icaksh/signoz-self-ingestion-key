@@ -1,0 +1,20 @@
+services:
+  proxy:
+    build: .
+    container_name: otlp-proxy
+    ports:
+      - "${PROXY_PORT:-4318}:4318"
+      - "${ADMIN_PORT:-8080}:8080"
+    environment:
+      - SIGNOZ_ENDPOINT=${SIGNOZ_ENDPOINT:-http://localhost:4318}
+      - SIGNOZ_INGESTION_KEY=${SIGNOZ_INGESTION_KEY:-}
+      - PROXY_PORT=4318
+      - ADMIN_PORT=8080
+      - DB_PATH=/data/tenants.db
+      - USAGE_RETENTION_DAYS=${USAGE_RETENTION_DAYS:-90}
+    volumes:
+      - proxy-data:/data
+    restart: unless-stopped
+
+volumes:
+  proxy-data:

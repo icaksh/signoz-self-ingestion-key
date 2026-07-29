@@ -1,0 +1,111 @@
+{{define "base"}}
+<!DOCTYPE html>
+<html lang="en" class="h-full bg-gray-950 text-gray-100">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>OTLP Proxy Admin</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script>tailwind.config={darkMode:'class',theme:{extend:{}}}</script>
+    <script src="https://unpkg.com/htmx.org@2.0.4"></script>
+    <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
+</head>
+<body class="h-full">
+    <nav class="border-b border-gray-800 bg-gray-900/50 backdrop-blur">
+        <div class="mx-auto max-w-6xl px-4 sm:px-6 lg:px-8">
+            <div class="flex h-14 items-center justify-between">
+                <div class="flex items-center gap-3">
+                    <span class="text-lg font-bold tracking-tight text-white">OTLP Proxy</span>
+                    <span class="rounded-md bg-indigo-500/10 px-2 py-0.5 text-xs font-medium text-indigo-400">Admin</span>
+                </div>
+                <div class="flex items-center gap-4">
+                    <a href="/" class="text-sm text-gray-400 hover:text-white transition-colors">Tenants</a>
+                    <a href="/users" class="text-sm text-gray-400 hover:text-white transition-colors">Users</a>
+                    <form hx-post="/logout" hx-target="body" class="inline">
+                        <button class="text-sm text-gray-500 hover:text-red-400 transition-colors">Logout</button>
+                    </form>
+                </div>
+            </div>
+        </div>
+    </nav>
+    <main class="mx-auto max-w-6xl px-4 sm:px-6 lg:px-8 py-8">
+{{end}}
+
+{{define "base_end"}}
+    </main>
+<script>
+function copyKey(key) {
+    navigator.clipboard.writeText(key).then(() => {
+        var toast = document.createElement('div');
+        toast.className = 'fixed bottom-4 right-4 rounded-lg bg-emerald-600 px-4 py-2 text-sm text-white shadow-lg z-50 animate-pulse';
+        toast.textContent = 'Key copied to clipboard!';
+        document.body.appendChild(toast);
+        setTimeout(() => toast.remove(), 2500);
+    });
+}
+
+function showKeyModal(id, key) {
+    var existing = document.getElementById('key-modal');
+    if (existing) existing.remove();
+
+    var overlay = document.createElement('div');
+    overlay.id = 'key-modal';
+    overlay.className = 'fixed inset-0 z-50 flex items-center justify-center bg-black/70 backdrop-blur-sm';
+    overlay.innerHTML =
+        '<div class="rounded-2xl border border-indigo-500/30 bg-gray-900 p-8 shadow-2xl shadow-indigo-500/10 max-w-md w-full mx-4">' +
+            '<div class="mb-4 flex items-center justify-between">' +
+                '<h2 class="text-lg font-bold text-white">API Key Created</h2>' +
+                '<span class="inline-flex items-center rounded-full bg-indigo-500/10 px-2.5 py-0.5 text-xs font-medium text-indigo-400 ring-1 ring-inset ring-indigo-500/20">New</span>' +
+            '</div>' +
+            '<p class="mb-4 text-sm text-gray-400">Copy this key now. It will not be shown again.</p>' +
+            '<div class="mb-6 rounded-xl border border-gray-700 bg-gray-950 p-4">' +
+                '<code class="break-all text-lg font-bold text-indigo-300">' + key + '</code>' +
+            '</div>' +
+            '<div class="flex gap-2">' +
+                '<button onclick="copyKey(\'' + key + '\');this.textContent=\'Copied!\';this.className=\'flex-1 rounded-lg bg-emerald-600 px-4 py-2.5 text-sm font-semibold text-white transition-colors\'" class="flex-1 rounded-lg bg-gray-700 px-4 py-2.5 text-sm font-semibold text-white hover:bg-gray-600 transition-colors">Copy to Clipboard</button>' +
+                '<button onclick="document.getElementById(\'key-modal\').remove()" class="flex-1 rounded-lg bg-gray-800 px-4 py-2.5 text-sm font-medium text-gray-300 hover:bg-gray-700 transition-colors">Close</button>' +
+            '</div>' +
+        '</div>';
+
+    overlay.addEventListener('click', (e) => {
+        if (e.target === overlay) overlay.remove();
+    });
+
+    document.body.appendChild(overlay);
+
+    setTimeout(() => {
+        var m = document.getElementById('key-modal');
+        if (m) m.remove();
+    }, 60000);
+}
+
+// server-side trigger after create (HX-Trigger header)
+document.body.addEventListener('revealKey', (evt) => {
+    setTimeout(() => {
+        var span = document.getElementById('kf-' + evt.detail.value);
+        if (span) showKeyModal(evt.detail.value, span.textContent);
+    }, 100);
+});
+
+document.body.addEventListener('showKey', (evt) => {
+    if (evt.detail && evt.detail.value) {
+        // key sent directly via HX-Trigger header (regenerate path)
+        showKeyModal('new', evt.detail.value);
+    }
+});
+
+// HTMX swap after regenerate — full row swap
+document.body.addEventListener('htmx:afterSwap', (evt) => {
+    var row = evt.detail.target;
+    if (!row || row.tagName !== 'TR') return;
+    if (!row.id || row.id.indexOf('tenant-') !== 0) return;
+    var id = row.id.replace('tenant-', '');
+    var span = document.getElementById('kf-' + id);
+    if (span && span.textContent) {
+        showKeyModal(id, span.textContent);
+    }
+});
+</script>
+</body>
+</html>
+{{end}}
