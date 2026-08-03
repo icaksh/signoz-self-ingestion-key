@@ -65,6 +65,32 @@ func (h *Handlers) NewForm(w http.ResponseWriter, r *http.Request) {
 	h.render(w, "tenant_form", data)
 }
 
+// parseRateLimits reads the optional rate-limit form fields. Empty fields
+// become nil (unlimited). Daily quota is entered in MB and stored as bytes.
+func parseRateLimits(r *http.Request) *store.RateLimitParams {
+	limits := &store.RateLimitParams{}
+	if v := r.FormValue("rate_limit_rps"); v != "" {
+		val, _ := strconv.ParseInt(v, 10, 64)
+		if val > 0 {
+			limits.RateLimitRPS = &val
+		}
+	}
+	if v := r.FormValue("burst_bytes"); v != "" {
+		val, _ := strconv.ParseInt(v, 10, 64)
+		if val > 0 {
+			limits.BurstBytes = &val
+		}
+	}
+	if v := r.FormValue("daily_byte_quota"); v != "" {
+		val, _ := strconv.ParseInt(v, 10, 64)
+		if val > 0 {
+			val = val * 1048576 // convert MB to bytes
+			limits.DailyByteQuota = &val
+		}
+	}
+	return limits
+}
+
 func (h *Handlers) CancelForm(w http.ResponseWriter, r *http.Request) {
 	w.Write([]byte(""))
 }
@@ -72,8 +98,9 @@ func (h *Handlers) CancelForm(w http.ResponseWriter, r *http.Request) {
 func (h *Handlers) Create(w http.ResponseWriter, r *http.Request) {
 	name := r.FormValue("name")
 	description := r.FormValue("description")
+	limits := parseRateLimits(r)
 
-	tenant, err := h.store.CreateTenant(r.Context(), name, description)
+	tenant, err := h.store.CreateTenant(r.Context(), name, description, limits)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
@@ -103,8 +130,9 @@ func (h *Handlers) Update(w http.ResponseWriter, r *http.Request) {
 	name := r.FormValue("name")
 	description := r.FormValue("description")
 	active := r.FormValue("active") == "on"
+	limits := parseRateLimits(r)
 
-	if err := h.store.UpdateTenant(r.Context(), id, name, description, active); err != nil {
+	if err := h.store.UpdateTenant(r.Context(), id, name, description, active, limits); err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
@@ -164,6 +192,32 @@ func (h *Handlers) UsageData(w http.ResponseWriter, r *http.Request) {
 
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(data)
+}
+
+// QuotaFragment renders the daily quota progress bar (HTMX fragment).
+func (h *Handlers) QuotaFragment(w http.ResponseWriter, r *http.Request) {
+	id, _ := strconv.ParseInt(r.PathValue("id"), 10, 64)
+	tenant, err := h.store.LookupTenantByID(r.Context(), id)
+	if err != nil || tenant == nil {
+		http.Error(w, "not found", http.StatusNotFound)
+		return
+	}
+	used, err := h.store.GetDailyByteUsage(r.Context(), id)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	data := struct {
+		Used  int64
+		Quota int64
+	}{
+		Used:  used,
+		Quota: 0,
+	}
+	if tenant.DailyByteQuota != nil {
+		data.Quota = *tenant.DailyByteQuota
+	}
+	h.render(w, "quota_fragment", data)
 }
 
 // --- user management ---

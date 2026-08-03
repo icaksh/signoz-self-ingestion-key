@@ -1,12 +1,14 @@
 package proxy
 
 import (
+	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
 	"strings"
 	"testing"
 
+	"github.com/sismedika/otlp-proxy/internal/ratelimit"
 	"github.com/sismedika/otlp-proxy/internal/store"
 )
 
@@ -29,7 +31,7 @@ func TestProxyMissingTenantKey(t *testing.T) {
 
 	st := testStore(t)
 
-	handler, err := NewHandler(backend.URL, "test-ingest-key", st, 4194304)
+	handler, err := NewHandler(backend.URL, "test-ingest-key", st, 4194304, ratelimit.NewLimiter(st))
 	if err != nil {
 		t.Fatalf("new handler: %v", err)
 	}
@@ -51,7 +53,7 @@ func TestProxyInvalidTenantKey(t *testing.T) {
 
 	st := testStore(t)
 
-	handler, err := NewHandler(backend.URL, "test-ingest-key", st, 4194304)
+	handler, err := NewHandler(backend.URL, "test-ingest-key", st, 4194304, ratelimit.NewLimiter(st))
 	if err != nil {
 		t.Fatalf("new handler: %v", err)
 	}
@@ -77,9 +79,9 @@ func TestProxyValidTenantForward(t *testing.T) {
 	defer backend.Close()
 
 	st := testStore(t)
-	tenant, _ := st.CreateTenant(t.Context(), "test-app", "")
+	tenant, _ := st.CreateTenant(t.Context(), "test-app", "", nil)
 
-	handler, err := NewHandler(backend.URL, "test-ingest-key", st, 4194304)
+	handler, err := NewHandler(backend.URL, "test-ingest-key", st, 4194304, ratelimit.NewLimiter(st))
 	if err != nil {
 		t.Fatalf("new handler: %v", err)
 	}
@@ -118,7 +120,7 @@ func TestProxyUnknownPath(t *testing.T) {
 
 	st := testStore(t)
 
-	handler, err := NewHandler(backend.URL, "test-ingest-key", st, 4194304)
+	handler, err := NewHandler(backend.URL, "test-ingest-key", st, 4194304, ratelimit.NewLimiter(st))
 	if err != nil {
 		t.Fatalf("new handler: %v", err)
 	}
@@ -142,9 +144,9 @@ func TestProxyValidForwardOptionalAuth(t *testing.T) {
 	defer backend.Close()
 
 	st := testStore(t)
-	tenant, _ := st.CreateTenant(t.Context(), "no-auth-app", "")
+	tenant, _ := st.CreateTenant(t.Context(), "no-auth-app", "", nil)
 
-	handler, err := NewHandler(backend.URL, "", st, 4194304)
+	handler, err := NewHandler(backend.URL, "", st, 4194304, ratelimit.NewLimiter(st))
 	if err != nil {
 		t.Fatalf("new handler: %v", err)
 	}
@@ -173,7 +175,7 @@ func TestProxyValidForwardOptionalAuth(t *testing.T) {
 
 func TestNewHandlerInvalidURL(t *testing.T) {
 	st := testStore(t)
-	_, err := NewHandler("://invalid", "key", st, 4194304)
+	_, err := NewHandler("://invalid", "key", st, 4194304, ratelimit.NewLimiter(st))
 	if err == nil {
 		t.Fatal("expected error for invalid URL")
 	}
@@ -194,9 +196,9 @@ func TestMaxBodyExceeded(t *testing.T) {
 	defer backend.Close()
 
 	st := testStore(t)
-	tenant, _ := st.CreateTenant(t.Context(), "max-body-test", "")
+	tenant, _ := st.CreateTenant(t.Context(), "max-body-test", "", nil)
 
-	handler, err := NewHandler(backend.URL, "test-key", st, 100)
+	handler, err := NewHandler(backend.URL, "test-key", st, 100, ratelimit.NewLimiter(st))
 	if err != nil {
 		t.Fatalf("new handler: %v", err)
 	}
@@ -220,9 +222,9 @@ func TestMaxBodyUnder(t *testing.T) {
 	defer backend.Close()
 
 	st := testStore(t)
-	tenant, _ := st.CreateTenant(t.Context(), "max-body-ok", "")
+	tenant, _ := st.CreateTenant(t.Context(), "max-body-ok", "", nil)
 
-	handler, err := NewHandler(backend.URL, "test-key", st, 100)
+	handler, err := NewHandler(backend.URL, "test-key", st, 100, ratelimit.NewLimiter(st))
 	if err != nil {
 		t.Fatalf("new handler: %v", err)
 	}
@@ -247,7 +249,7 @@ func TestProxyNearPathRejected(t *testing.T) {
 	defer backend.Close()
 
 	st := testStore(t)
-	handler, err := NewHandler(backend.URL, "test-key", st, 4194304)
+	handler, err := NewHandler(backend.URL, "test-key", st, 4194304, ratelimit.NewLimiter(st))
 	if err != nil {
 		t.Fatalf("new handler: %v", err)
 	}
@@ -272,9 +274,9 @@ func TestProxyStripsTenantKeyHeader(t *testing.T) {
 	defer backend.Close()
 
 	st := testStore(t)
-	tenant, _ := st.CreateTenant(t.Context(), "strip-test", "")
+	tenant, _ := st.CreateTenant(t.Context(), "strip-test", "", nil)
 
-	handler, err := NewHandler(backend.URL, "test-ingest-key", st, 4194304)
+	handler, err := NewHandler(backend.URL, "test-ingest-key", st, 4194304, ratelimit.NewLimiter(st))
 	if err != nil {
 		t.Fatalf("new handler: %v", err)
 	}
@@ -294,7 +296,7 @@ func TestProxyStripsTenantKeyHeader(t *testing.T) {
 
 func TestProxyHealthz(t *testing.T) {
 	st := testStore(t)
-	handler, err := NewHandler("http://localhost:1", "key", st, 4194304)
+	handler, err := NewHandler("http://localhost:1", "key", st, 4194304, ratelimit.NewLimiter(st))
 	if err != nil {
 		t.Fatalf("new handler: %v", err)
 	}
@@ -316,7 +318,7 @@ func TestProxyHealthzDBDown(t *testing.T) {
 	// Close the DB to simulate failure
 	st.Close()
 
-	handler, err := NewHandler("http://localhost:1", "key", st, 4194304)
+	handler, err := NewHandler("http://localhost:1", "key", st, 4194304, ratelimit.NewLimiter(st))
 	if err != nil {
 		t.Fatalf("new handler: %v", err)
 	}
@@ -337,9 +339,9 @@ func TestProxyUpstream503(t *testing.T) {
 	defer backend.Close()
 
 	st := testStore(t)
-	tenant, _ := st.CreateTenant(t.Context(), "upstream-503", "")
+	tenant, _ := st.CreateTenant(t.Context(), "upstream-503", "", nil)
 
-	handler, err := NewHandler(backend.URL, "test-key", st, 4194304)
+	handler, err := NewHandler(backend.URL, "test-key", st, 4194304, ratelimit.NewLimiter(st))
 	if err != nil {
 		t.Fatalf("new handler: %v", err)
 	}
@@ -373,9 +375,9 @@ func TestProxyChunkedBodyCounting(t *testing.T) {
 	defer backend.Close()
 
 	st := testStore(t)
-	tenant, _ := st.CreateTenant(t.Context(), "chunked-test", "")
+	tenant, _ := st.CreateTenant(t.Context(), "chunked-test", "", nil)
 
-	handler, err := NewHandler(backend.URL, "test-key", st, 4194304)
+	handler, err := NewHandler(backend.URL, "test-key", st, 4194304, ratelimit.NewLimiter(st))
 	if err != nil {
 		t.Fatalf("new handler: %v", err)
 	}
@@ -411,9 +413,9 @@ func TestProxySpoofedContentLength(t *testing.T) {
 	defer backend.Close()
 
 	st := testStore(t)
-	tenant, _ := st.CreateTenant(t.Context(), "spoof-test", "")
+	tenant, _ := st.CreateTenant(t.Context(), "spoof-test", "", nil)
 
-	handler, err := NewHandler(backend.URL, "test-key", st, 4194304)
+	handler, err := NewHandler(backend.URL, "test-key", st, 4194304, ratelimit.NewLimiter(st))
 	if err != nil {
 		t.Fatalf("new handler: %v", err)
 	}
@@ -441,7 +443,7 @@ func TestProxySpoofedContentLength(t *testing.T) {
 
 func TestProxyHealthzDroppedCounter(t *testing.T) {
 	st := testStore(t)
-	handler, err := NewHandler("http://localhost:1", "key", st, 4194304)
+	handler, err := NewHandler("http://localhost:1", "key", st, 4194304, ratelimit.NewLimiter(st))
 	if err != nil {
 		t.Fatalf("new handler: %v", err)
 	}
@@ -455,5 +457,86 @@ func TestProxyHealthzDroppedCounter(t *testing.T) {
 	}
 	if !strings.Contains(rec.Body.String(), `"dropped":0`) {
 		t.Fatalf("expected dropped counter in healthz, got %q", rec.Body.String())
+	}
+}
+
+func TestProxyRateLimit429(t *testing.T) {
+	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer backend.Close()
+
+	st := testStore(t)
+	rps10 := int64(10)
+	tenant, _ := st.CreateTenant(t.Context(), "rl-test", "", &store.RateLimitParams{RateLimitRPS: &rps10})
+
+	lim := ratelimit.NewLimiter(st)
+	lim.Start()
+	defer lim.Stop()
+
+	handler, err := NewHandler(backend.URL, "", st, 4194304, lim)
+	if err != nil {
+		t.Fatalf("new handler: %v", err)
+	}
+
+	for i := 0; i < 10; i++ {
+		req := httptest.NewRequest("POST", "/v1/traces", strings.NewReader("x"))
+		req.Header.Set("X-Tenant-Key", tenant.APIKey)
+		rec := httptest.NewRecorder()
+		handler.ServeHTTP(rec, req)
+		if rec.Code != http.StatusOK {
+			t.Fatalf("request %d: expected 200, got %d", i+1, rec.Code)
+		}
+	}
+
+	req := httptest.NewRequest("POST", "/v1/traces", strings.NewReader("x"))
+	req.Header.Set("X-Tenant-Key", tenant.APIKey)
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusTooManyRequests {
+		t.Fatalf("expected 429, got %d", rec.Code)
+	}
+	if rec.Header().Get("Retry-After") != "1" {
+		t.Fatalf("expected Retry-After: 1 header, got %q", rec.Header().Get("Retry-After"))
+	}
+	var body map[string]string
+	if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
+		t.Fatalf("invalid JSON body: %v", err)
+	}
+	if body["error"] != "rate limit exceeded" {
+		t.Fatalf("unexpected body: %s", rec.Body.String())
+	}
+	if body["reason"] != "rps" {
+		t.Fatalf("expected reason=rps, got %q", body["reason"])
+	}
+}
+
+func TestProxyNoRateLimit(t *testing.T) {
+	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer backend.Close()
+
+	st := testStore(t)
+	tenant, _ := st.CreateTenant(t.Context(), "no-rl", "", nil)
+
+	lim := ratelimit.NewLimiter(st)
+	lim.Start()
+	defer lim.Stop()
+
+	handler, err := NewHandler(backend.URL, "", st, 4194304, lim)
+	if err != nil {
+		t.Fatalf("new handler: %v", err)
+	}
+
+	for i := 0; i < 50; i++ {
+		req := httptest.NewRequest("POST", "/v1/traces", strings.NewReader("x"))
+		req.Header.Set("X-Tenant-Key", tenant.APIKey)
+		rec := httptest.NewRecorder()
+		handler.ServeHTTP(rec, req)
+		if rec.Code != http.StatusOK {
+			t.Fatalf("request %d: expected 200 (unlimited), got %d", i+1, rec.Code)
+		}
 	}
 }

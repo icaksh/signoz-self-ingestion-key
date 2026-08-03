@@ -1,6 +1,7 @@
 package proxy
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
@@ -10,25 +11,15 @@ import (
 	"net/http/httputil"
 	"net/url"
 
+	"github.com/sismedika/otlp-proxy/internal/ratelimit"
 	"github.com/sismedika/otlp-proxy/internal/store"
 )
 
 type Handler struct {
 	proxy        *httputil.ReverseProxy
 	store        *store.Store
+	limiter      *ratelimit.Limiter
 	maxBodyBytes int64
-}
-
-// countingReadCloser wraps an io.ReadCloser and counts the bytes actually read.
-type countingReadCloser struct {
-	io.ReadCloser
-	n int64
-}
-
-func (c *countingReadCloser) Read(p []byte) (int, error) {
-	n, err := c.ReadCloser.Read(p)
-	c.n += int64(n)
-	return n, err
 }
 
 // statusRecorder captures the real upstream status code via ModifyResponse.
@@ -38,7 +29,7 @@ type statusRecorder struct {
 
 type ctxKeyStatus struct{}
 
-func NewHandler(signozEndpoint, signozIngestKey string, st *store.Store, maxBodyBytes int64) (*Handler, error) {
+func NewHandler(signozEndpoint, signozIngestKey string, st *store.Store, maxBodyBytes int64, lim *ratelimit.Limiter) (*Handler, error) {
 	target, err := url.Parse(signozEndpoint)
 	if err != nil {
 		return nil, err
@@ -46,6 +37,7 @@ func NewHandler(signozEndpoint, signozIngestKey string, st *store.Store, maxBody
 
 	h := &Handler{
 		store:        st,
+		limiter:      lim,
 		maxBodyBytes: maxBodyBytes,
 	}
 
@@ -78,6 +70,13 @@ func NewHandler(signozEndpoint, signozIngestKey string, st *store.Store, maxBody
 
 	h.proxy = proxy
 	return h, nil
+}
+
+func (h *Handler) writeRateLimit(w http.ResponseWriter, reason string) {
+	w.Header().Set("Content-Type", "application/json")
+	w.Header().Set("Retry-After", "1")
+	w.WriteHeader(http.StatusTooManyRequests)
+	fmt.Fprintf(w, `{"error":"rate limit exceeded","reason":"%s"}`, reason)
 }
 
 func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
@@ -141,12 +140,39 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Wrap body for accurate byte counting
-	var cr *countingReadCloser
-	if r.Body != nil {
-		cr = &countingReadCloser{ReadCloser: r.Body}
-		r.Body = cr
+	// RPS pre-check — reject before consuming the body
+	if dec := h.limiter.AllowRPS(tenant.ID); !dec.Allowed {
+		h.writeRateLimit(w, dec.Reason)
+		return
 	}
+
+	// Read the whole body so the byte-aware rate check runs before forwarding
+	var originalBytes []byte
+	if r.Body != nil {
+		originalBytes, err = io.ReadAll(r.Body)
+		var maxBytesErr *http.MaxBytesError
+		if errors.As(err, &maxBytesErr) {
+			http.Error(w, `{"error":"request body too large"}`, http.StatusRequestEntityTooLarge)
+			return
+		}
+		if err != nil {
+			log.Printf("[proxy] body read error: %v", err)
+			http.Error(w, `{"error":"internal error"}`, http.StatusInternalServerError)
+			return
+		}
+	}
+	r.Body.Close()
+	originalByteCount := int64(len(originalBytes))
+
+	// Byte-aware check (burst bytes + daily quota)
+	if dec := h.limiter.AllowBytes(tenant.ID, originalByteCount); !dec.Allowed {
+		h.writeRateLimit(w, dec.Reason)
+		return
+	}
+
+	// Rebuild the body for forwarding
+	r.Body = io.NopCloser(bytes.NewReader(originalBytes))
+	r.ContentLength = originalByteCount
 
 	// Inject status recorder into context for ModifyResponse. Default 502 —
 	// the ErrorHandler path never calls ModifyResponse, so a transport error
@@ -157,11 +183,5 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 	h.proxy.ServeHTTP(w, r)
 
-	// Read actual values after proxy completes
-	actualBytes := int64(0)
-	if cr != nil {
-		actualBytes = cr.n
-	}
-
-	h.store.RecordUsage(tenant.ID, signalType, sr.code, actualBytes)
+	h.store.RecordUsage(tenant.ID, signalType, sr.code, originalByteCount)
 }

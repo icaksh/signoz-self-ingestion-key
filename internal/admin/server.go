@@ -31,7 +31,9 @@ type Server struct {
 
 func NewServer(st *store.Store, addr string, signingKey []byte, cookieSecure bool) *http.Server {
 	funcMap := template.FuncMap{
-		"maskKey": maskKey,
+		"maskKey":   maskKey,
+		"megaBytes": megaBytes,
+		"percent":   percentOf,
 	}
 
 	tmpl := template.Must(template.New("").Funcs(funcMap).ParseFS(templateFS, "templates/*.html"))
@@ -58,6 +60,7 @@ func NewServer(st *store.Store, addr string, signingKey []byte, cookieSecure boo
 	mux.HandleFunc("POST /tenants/{id}/regenerate", s.requireAuth(h.RegenerateKey))
 	mux.HandleFunc("GET /tenants/{id}/usage", s.requireAuth(h.UsagePage))
 	mux.HandleFunc("GET /tenants/{id}/usage/data", s.requireAuth(h.UsageData))
+	mux.HandleFunc("GET /tenants/{id}/quota", s.requireAuth(h.QuotaFragment))
 	mux.HandleFunc("GET /tenants/cancel", s.requireAuth(h.CancelForm))
 	mux.HandleFunc("GET /users", s.requireAuth(h.UsersPage))
 	mux.HandleFunc("POST /users", s.requireAuth(h.CreateUser))
@@ -75,6 +78,34 @@ func loggingMiddleware(next http.Handler) http.Handler {
 		log.Printf("[admin] %s %s", r.Method, r.URL.Path)
 		next.ServeHTTP(w, r)
 	})
+}
+
+// megaBytes converts bytes to a human-friendly MB value (1 MB = 1048576 B).
+func megaBytes(v any) float64 {
+	switch n := v.(type) {
+	case int64:
+		return float64(n) / 1048576
+	case *int64:
+		if n != nil {
+			return float64(*n) / 1048576
+		}
+	}
+	return 0
+}
+
+// percentOf returns the percentage of used/quota, clamped to [0, 100].
+func percentOf(used, quota int64) int {
+	if quota <= 0 {
+		return 0
+	}
+	pct := int(used * 100 / quota)
+	if pct > 100 {
+		pct = 100
+	}
+	if pct < 0 {
+		pct = 0
+	}
+	return pct
 }
 
 func (s *Server) healthz(w http.ResponseWriter, r *http.Request) {

@@ -11,6 +11,14 @@
         <button onclick="loadData('30d');setActive(this)" class="rounded-md px-3 py-1.5 text-xs font-medium text-gray-400 hover:text-white transition-colors">30d</button>
     </div>
 </div>
+{{if .Tenant.DailyByteQuota}}
+<div id="quota-summary" class="mb-6 rounded-xl border border-gray-800 bg-gray-900/50 p-4">
+    <h3 class="mb-3 text-sm font-semibold text-gray-300">Daily Quota</h3>
+    <div hx-get="/tenants/{{.Tenant.ID}}/quota" hx-trigger="load, every 60s">
+        <p class="text-sm text-gray-500">Loading...</p>
+    </div>
+</div>
+{{end}}
 <div class="grid grid-cols-2 gap-6">
     <div class="rounded-xl border border-gray-800 bg-gray-900/50 p-6">
         <h3 class="mb-4 text-sm font-semibold text-gray-300">Requests Over Time</h3>

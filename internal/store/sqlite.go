@@ -19,14 +19,24 @@ import (
 )
 
 type Tenant struct {
-	ID          int64
-	Name        string
-	APIKey      string
-	KeyPrefix   string
-	Active      bool
-	Description string
-	CreatedAt   time.Time
-	UpdatedAt   time.Time
+	ID             int64
+	Name           string
+	APIKey         string
+	KeyPrefix      string
+	Active         bool
+	Description    string
+	RateLimitRPS   *int64 // nil = unlimited
+	BurstBytes     *int64 // nil = unlimited
+	DailyByteQuota *int64 // nil = unlimited
+	CreatedAt      time.Time
+	UpdatedAt      time.Time
+}
+
+// RateLimitParams carries optional per-tenant rate limits; nil fields = unlimited.
+type RateLimitParams struct {
+	RateLimitRPS   *int64
+	BurstBytes     *int64
+	DailyByteQuota *int64
 }
 
 type User struct {
@@ -382,6 +392,16 @@ func migrate(db *sql.DB) error {
 	if _, err := db.Exec(schema); err != nil {
 		return err
 	}
+
+	// Rate-limiting columns (additive; ignore "duplicate column" errors)
+	for _, s := range []string{
+		"ALTER TABLE tenants ADD COLUMN rate_limit_rps INTEGER",
+		"ALTER TABLE tenants ADD COLUMN burst_bytes INTEGER",
+		"ALTER TABLE tenants ADD COLUMN daily_byte_quota INTEGER",
+	} {
+		_, _ = db.Exec(s) // best-effort — fails harmlessly if column exists
+	}
+
 	if err := ensureTenantSchema(db); err != nil {
 		return err
 	}
@@ -544,7 +564,8 @@ func (s *Store) LookupTenantByKey(ctx context.Context, fullKey string) (*Tenant,
 		keyHash := sha256Hex(fullKey)
 
 		rows, err := s.db.QueryContext(ctx,
-			`SELECT ak.key_hash, t.id, t.name, COALESCE(t.api_key, ''), t.active, t.description, t.created_at, t.updated_at
+			`SELECT ak.key_hash, t.id, t.name, COALESCE(t.api_key, ''), t.active, t.description,
+			        t.rate_limit_rps, t.burst_bytes, t.daily_byte_quota, t.created_at, t.updated_at
 			 FROM api_keys ak JOIN tenants t ON ak.tenant_id = t.id
 			 WHERE ak.tenant_id = ? AND ak.enabled = 1 AND ak.revoked_at IS NULL AND t.active = 1`,
 			tenantID)
@@ -563,7 +584,8 @@ func (s *Store) LookupTenantByKey(ctx context.Context, fullKey string) (*Tenant,
 	}
 	keyHash := sha256Hex(fullKey)
 	rows, err := s.db.QueryContext(ctx,
-		`SELECT ak.key_hash, t.id, t.name, COALESCE(t.api_key, ''), t.active, t.description, t.created_at, t.updated_at
+		`SELECT ak.key_hash, t.id, t.name, COALESCE(t.api_key, ''), t.active, t.description,
+		        t.rate_limit_rps, t.burst_bytes, t.daily_byte_quota, t.created_at, t.updated_at
 		 FROM api_keys ak JOIN tenants t ON ak.tenant_id = t.id
 		 WHERE ak.key_hash = ? AND ak.enabled = 1 AND ak.revoked_at IS NULL AND t.active = 1`,
 		keyHash)
@@ -589,18 +611,29 @@ func (s *Store) matchCandidates(ctx context.Context, rows *sql.Rows, keyHash str
 	type candidate struct {
 		hash string
 		ten  Tenant
-		act  bool
 	}
 	var candidates []candidate
 	for rows.Next() {
 		var hash string
 		var t Tenant
 		var active int
-		if err := rows.Scan(&hash, &t.ID, &t.Name, &t.APIKey, &active, &t.Description, &t.CreatedAt, &t.UpdatedAt); err != nil {
+		var rps, burst, quota sql.NullInt64
+		if err := rows.Scan(&hash, &t.ID, &t.Name, &t.APIKey, &active, &t.Description,
+			&rps, &burst, &quota, &t.CreatedAt, &t.UpdatedAt); err != nil {
 			rows.Close()
 			return nil, err
 		}
-		candidates = append(candidates, candidate{hash: hash, ten: t, act: active == 1})
+		t.Active = active == 1
+		if rps.Valid {
+			t.RateLimitRPS = &rps.Int64
+		}
+		if burst.Valid {
+			t.BurstBytes = &burst.Int64
+		}
+		if quota.Valid {
+			t.DailyByteQuota = &quota.Int64
+		}
+		candidates = append(candidates, candidate{hash: hash, ten: t})
 	}
 	if err := rows.Err(); err != nil {
 		rows.Close()
@@ -610,7 +643,6 @@ func (s *Store) matchCandidates(ctx context.Context, rows *sql.Rows, keyHash str
 
 	for _, c := range candidates {
 		if subtle.ConstantTimeCompare([]byte(c.hash), []byte(keyHash)) == 1 {
-			c.ten.Active = c.act
 			// Update last_used_at (best-effort, don't fail on error)
 			_, _ = s.db.ExecContext(ctx,
 				`UPDATE api_keys SET last_used_at = CURRENT_TIMESTAMP WHERE key_hash = ?`, c.hash)
@@ -630,7 +662,8 @@ func (s *Store) CreateAPIKey(ctx context.Context, tenantID int64, fullKey string
 
 // tenantSelect returns the column list plus the latest active key prefix.
 const tenantSelect = `
-	SELECT t.id, t.name, COALESCE(t.api_key, ''), t.active, t.description, t.created_at, t.updated_at,
+	SELECT t.id, t.name, COALESCE(t.api_key, ''), t.active, t.description,
+	       t.rate_limit_rps, t.burst_bytes, t.daily_byte_quota, t.created_at, t.updated_at,
 	       COALESCE((SELECT ak.key_prefix FROM api_keys ak
 	                 WHERE ak.tenant_id = t.id AND ak.enabled = 1 AND ak.revoked_at IS NULL
 	                 ORDER BY ak.created_at DESC LIMIT 1), '') AS key_prefix`
@@ -638,11 +671,22 @@ const tenantSelect = `
 func scanTenant(scanner interface{ Scan(...any) error }) (*Tenant, error) {
 	t := &Tenant{}
 	var active int
-	err := scanner.Scan(&t.ID, &t.Name, &t.APIKey, &active, &t.Description, &t.CreatedAt, &t.UpdatedAt, &t.KeyPrefix)
+	var rps, burst, quota sql.NullInt64
+	err := scanner.Scan(&t.ID, &t.Name, &t.APIKey, &active, &t.Description,
+		&rps, &burst, &quota, &t.CreatedAt, &t.UpdatedAt, &t.KeyPrefix)
 	if err != nil {
 		return nil, err
 	}
 	t.Active = active == 1
+	if rps.Valid {
+		t.RateLimitRPS = &rps.Int64
+	}
+	if burst.Valid {
+		t.BurstBytes = &burst.Int64
+	}
+	if quota.Valid {
+		t.DailyByteQuota = &quota.Int64
+	}
 	return t, nil
 }
 
@@ -685,12 +729,15 @@ func GenerateAPIKey() string {
 	return hex.EncodeToString(b)
 }
 
-func (s *Store) CreateTenant(ctx context.Context, name, description string) (*Tenant, error) {
+func (s *Store) CreateTenant(ctx context.Context, name, description string, limits *RateLimitParams) (*Tenant, error) {
+	if limits == nil {
+		limits = &RateLimitParams{}
+	}
 	now := time.Now()
 	res, err := s.db.ExecContext(ctx,
-		`INSERT INTO tenants (name, api_key, active, description, created_at, updated_at)
-		 VALUES (?, '', 1, ?, ?, ?)`,
-		name, description, now, now)
+		`INSERT INTO tenants (name, api_key, active, description, rate_limit_rps, burst_bytes, daily_byte_quota, created_at, updated_at)
+		 VALUES (?, '', 1, ?, ?, ?, ?, ?, ?)`,
+		name, description, limits.RateLimitRPS, limits.BurstBytes, limits.DailyByteQuota, now, now)
 	if err != nil {
 		return nil, fmt.Errorf("create tenant: %w", err)
 	}
@@ -707,27 +754,56 @@ func (s *Store) CreateTenant(ctx context.Context, name, description string) (*Te
 	}
 
 	return &Tenant{
-		ID:          id,
-		Name:        name,
-		APIKey:      apiKey, // full plaintext — returned once for display
-		KeyPrefix:   keyPrefix,
-		Active:      true,
-		Description: description,
-		CreatedAt:   now,
-		UpdatedAt:   now,
+		ID:             id,
+		Name:           name,
+		APIKey:         apiKey, // full plaintext — returned once for display
+		KeyPrefix:      keyPrefix,
+		Active:         true,
+		Description:    description,
+		RateLimitRPS:   limits.RateLimitRPS,
+		BurstBytes:     limits.BurstBytes,
+		DailyByteQuota: limits.DailyByteQuota,
+		CreatedAt:      now,
+		UpdatedAt:      now,
 	}, nil
 }
 
-func (s *Store) UpdateTenant(ctx context.Context, id int64, name, description string, active bool) error {
+func (s *Store) UpdateTenant(ctx context.Context, id int64, name, description string, active bool, limits *RateLimitParams) error {
+	if limits == nil {
+		limits = &RateLimitParams{}
+	}
 	activeInt := 0
 	if active {
 		activeInt = 1
 	}
 	_, err := s.db.ExecContext(ctx,
-		`UPDATE tenants SET name = ?, active = ?, description = ?, updated_at = CURRENT_TIMESTAMP
+		`UPDATE tenants SET name = ?, active = ?, description = ?, rate_limit_rps = ?, burst_bytes = ?, daily_byte_quota = ?, updated_at = CURRENT_TIMESTAMP
 		 WHERE id = ?`,
-		name, activeInt, description, id)
+		name, activeInt, description, limits.RateLimitRPS, limits.BurstBytes, limits.DailyByteQuota, id)
 	return err
+}
+
+// GetDailyByteUsage returns total bytes recorded for the tenant in the current
+// UTC day.
+func (s *Store) GetDailyByteUsage(ctx context.Context, tenantID int64) (int64, error) {
+	todayPrefix := utcDayPrefix()
+	var total sql.NullInt64
+	err := s.db.QueryRowContext(ctx,
+		`SELECT SUM(bytes) FROM usage_counters
+		 WHERE tenant_id = ? AND hour_bucket >= ?`,
+		tenantID, todayPrefix+"T00",
+	).Scan(&total)
+	if err != nil {
+		return 0, err
+	}
+	if total.Valid {
+		return total.Int64, nil
+	}
+	return 0, nil
+}
+
+func utcDayPrefix() string {
+	return time.Now().UTC().Format("2006-01-02")
 }
 
 func (s *Store) DeleteTenant(ctx context.Context, id int64) error {

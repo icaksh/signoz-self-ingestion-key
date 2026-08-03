@@ -22,6 +22,30 @@
                 Active
             </label>
         </div>
+        <div class="mb-4">
+            <h4 class="mb-2 text-xs font-semibold text-gray-500 uppercase tracking-wider">Rate Limits</h4>
+            <p class="mb-3 text-xs text-gray-500">Leave empty for unlimited. All fields optional.</p>
+            <div class="grid grid-cols-3 gap-4">
+                <div>
+                    <label class="mb-1 block text-sm font-medium text-gray-300">Rate Limit (req/s)</label>
+                    <input type="number" name="rate_limit_rps" value="{{if .Tenant.RateLimitRPS}}{{.Tenant.RateLimitRPS}}{{end}}"
+                        min="1" placeholder="Unlimited"
+                        class="w-full rounded-lg border border-gray-700 bg-gray-800 px-3 py-2 text-sm text-white placeholder-gray-500 focus:border-indigo-500 focus:outline-none focus:ring-1 focus:ring-indigo-500">
+                </div>
+                <div>
+                    <label class="mb-1 block text-sm font-medium text-gray-300">Burst Bytes</label>
+                    <input type="number" name="burst_bytes" value="{{if .Tenant.BurstBytes}}{{.Tenant.BurstBytes}}{{end}}"
+                        min="1" placeholder="Unlimited"
+                        class="w-full rounded-lg border border-gray-700 bg-gray-800 px-3 py-2 text-sm text-white placeholder-gray-500 focus:border-indigo-500 focus:outline-none focus:ring-1 focus:ring-indigo-500">
+                </div>
+                <div>
+                    <label class="mb-1 block text-sm font-medium text-gray-300">Daily Quota (MB)</label>
+                    <input type="number" name="daily_byte_quota" value="{{if .Tenant.DailyByteQuota}}{{megaBytes .Tenant.DailyByteQuota}}{{end}}"
+                        min="1" placeholder="Unlimited"
+                        class="w-full rounded-lg border border-gray-700 bg-gray-800 px-3 py-2 text-sm text-white placeholder-gray-500 focus:border-indigo-500 focus:outline-none focus:ring-1 focus:ring-indigo-500">
+                </div>
+            </div>
+        </div>
         <div class="flex items-center gap-2">
             <button type="submit"
                 class="rounded-lg bg-indigo-600 px-4 py-2 text-sm font-semibold text-white hover:bg-indigo-500 transition-colors">Save</button>

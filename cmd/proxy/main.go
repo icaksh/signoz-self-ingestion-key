@@ -12,6 +12,7 @@ import (
 	"github.com/sismedika/otlp-proxy/internal/admin"
 	"github.com/sismedika/otlp-proxy/internal/config"
 	"github.com/sismedika/otlp-proxy/internal/proxy"
+	"github.com/sismedika/otlp-proxy/internal/ratelimit"
 	"github.com/sismedika/otlp-proxy/internal/store"
 )
 
@@ -27,7 +28,11 @@ func main() {
 	}
 	defer st.Close()
 
-	proxyHandler, err := proxy.NewHandler(cfg.SigNozEndpoint, cfg.SigNozIngestKey, st, cfg.MaxBodyBytes)
+	lim := ratelimit.NewLimiter(st)
+	lim.Start()
+	defer lim.Stop()
+
+	proxyHandler, err := proxy.NewHandler(cfg.SigNozEndpoint, cfg.SigNozIngestKey, st, cfg.MaxBodyBytes, lim)
 	if err != nil {
 		log.Fatalf("proxy: %v", err)
 	}

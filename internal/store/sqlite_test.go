@@ -25,7 +25,7 @@ func TestCreateAndLookupTenant(t *testing.T) {
 	ctx := context.Background()
 	s := testDB(t)
 
-	tenant, err := s.CreateTenant(ctx, "test-app", "test tenant")
+	tenant, err := s.CreateTenant(ctx, "test-app", "test tenant", nil)
 	if err != nil {
 		t.Fatalf("create: %v", err)
 	}
@@ -74,8 +74,8 @@ func TestLookupInactiveTenant(t *testing.T) {
 	ctx := context.Background()
 	s := testDB(t)
 
-	tenant, _ := s.CreateTenant(ctx, "app", "")
-	s.UpdateTenant(ctx, tenant.ID, "app", "", false)
+	tenant, _ := s.CreateTenant(ctx, "app", "", nil)
+	s.UpdateTenant(ctx, tenant.ID, "app", "", false, nil)
 
 	found, _ := s.LookupTenant(ctx, tenant.APIKey)
 	if found != nil {
@@ -87,8 +87,8 @@ func TestListTenants(t *testing.T) {
 	ctx := context.Background()
 	s := testDB(t)
 
-	s.CreateTenant(ctx, "a", "")
-	s.CreateTenant(ctx, "b", "")
+	s.CreateTenant(ctx, "a", "", nil)
+	s.CreateTenant(ctx, "b", "", nil)
 
 	list, err := s.ListTenants(ctx)
 	if err != nil {
@@ -103,7 +103,7 @@ func TestRegenerateKey(t *testing.T) {
 	ctx := context.Background()
 	s := testDB(t)
 
-	tenant, _ := s.CreateTenant(ctx, "app", "")
+	tenant, _ := s.CreateTenant(ctx, "app", "", nil)
 	oldKey := tenant.APIKey
 
 	newKey, err := s.RegenerateKey(ctx, tenant.ID)
@@ -129,7 +129,7 @@ func TestDeleteTenant(t *testing.T) {
 	ctx := context.Background()
 	s := testDB(t)
 
-	tenant, _ := s.CreateTenant(ctx, "app", "")
+	tenant, _ := s.CreateTenant(ctx, "app", "", nil)
 	s.LogUsage(ctx, tenant.ID, "traces", 100, 200)
 	s.LogUsage(ctx, tenant.ID, "metrics", 200, 200)
 
@@ -145,7 +145,7 @@ func TestUsageData(t *testing.T) {
 	ctx := context.Background()
 	s := testDB(t)
 
-	tenant, _ := s.CreateTenant(ctx, "app", "")
+	tenant, _ := s.CreateTenant(ctx, "app", "", nil)
 	s.RecordUsage(tenant.ID, "traces", 200, 1000)
 	s.RecordUsage(tenant.ID, "traces", 200, 2000)
 	s.RecordUsage(tenant.ID, "metrics", 200, 500)
@@ -165,7 +165,7 @@ func TestCleanupOldLogs(t *testing.T) {
 	ctx := context.Background()
 	s := testDB(t)
 
-	tenant, _ := s.CreateTenant(ctx, "app", "")
+	tenant, _ := s.CreateTenant(ctx, "app", "", nil)
 	// usage_counters are the source of truth now; usage_logs keeps legacy rows.
 	// Insert a legacy row directly and verify CleanupOldLogs only touches usage_logs.
 	if _, err := s.db.ExecContext(ctx,
@@ -200,7 +200,7 @@ func TestOnDeleteCascade(t *testing.T) {
 	ctx := context.Background()
 	s := testDB(t)
 
-	tenant, _ := s.CreateTenant(ctx, "cascade-test", "")
+	tenant, _ := s.CreateTenant(ctx, "cascade-test", "", nil)
 	s.LogUsage(ctx, tenant.ID, "traces", 100, 200)
 	s.LogUsage(ctx, tenant.ID, "metrics", 200, 200)
 
@@ -238,7 +238,7 @@ func TestAPIKeyHashAndLookup(t *testing.T) {
 	ctx := context.Background()
 	s := testDB(t)
 
-	tenant, _ := s.CreateTenant(ctx, "hash-app", "")
+	tenant, _ := s.CreateTenant(ctx, "hash-app", "", nil)
 
 	// Wrong key fails
 	wrong, err := s.LookupTenantByKey(ctx, "ing_"+strconv.FormatInt(tenant.ID, 10)+"_deadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeef")
@@ -263,7 +263,7 @@ func TestAPIKeyRevoked(t *testing.T) {
 	ctx := context.Background()
 	s := testDB(t)
 
-	tenant, _ := s.CreateTenant(ctx, "revoke-app", "")
+	tenant, _ := s.CreateTenant(ctx, "revoke-app", "", nil)
 	oldKey := tenant.APIKey
 
 	if _, err := s.RegenerateKey(ctx, tenant.ID); err != nil {
@@ -349,7 +349,7 @@ func TestAPIKeyNoPlaintextInDB(t *testing.T) {
 	ctx := context.Background()
 	s := testDB(t)
 
-	tenant, _ := s.CreateTenant(ctx, "no-plaintext", "")
+	tenant, _ := s.CreateTenant(ctx, "no-plaintext", "", nil)
 	var apiKey string
 	s.db.QueryRowContext(ctx, `SELECT COALESCE(api_key, '') FROM tenants WHERE id = ?`, tenant.ID).Scan(&apiKey)
 	if apiKey != "" {
@@ -376,7 +376,7 @@ func TestUsageWriterBasic(t *testing.T) {
 	ctx := context.Background()
 	s := testDB(t)
 
-	tenant, _ := s.CreateTenant(ctx, "writer-test", "")
+	tenant, _ := s.CreateTenant(ctx, "writer-test", "", nil)
 
 	// Record 5 samples: 3 traces (1 error), 2 metrics (0 errors)
 	s.RecordUsage(tenant.ID, "traces", 200, 100)
@@ -415,7 +415,7 @@ func TestUsageWriterBulk(t *testing.T) {
 	ctx := context.Background()
 	s := testDB(t)
 
-	tenant, _ := s.CreateTenant(ctx, "bulk-test", "")
+	tenant, _ := s.CreateTenant(ctx, "bulk-test", "", nil)
 
 	const n = 10000
 	var expectBytes int64
@@ -478,7 +478,7 @@ func TestUsageWriterGoroutineExit(t *testing.T) {
 		t.Fatalf("open: %v", err)
 	}
 
-	tenant, _ := s.CreateTenant(t.Context(), "goroutine-test", "")
+	tenant, _ := s.CreateTenant(t.Context(), "goroutine-test", "", nil)
 	s.RecordUsage(tenant.ID, "traces", 200, 100)
 
 	// Close should block until writer flushes and exits
@@ -493,7 +493,7 @@ func TestUsageWriterShutdownFlush(t *testing.T) {
 		t.Fatalf("open: %v", err)
 	}
 
-	tenant, _ := s.CreateTenant(t.Context(), "shutdown-flush", "")
+	tenant, _ := s.CreateTenant(t.Context(), "shutdown-flush", "", nil)
 	const n = 5000
 	for i := 0; i < n; i++ {
 		s.RecordUsage(tenant.ID, "traces", 200, 10)
@@ -521,7 +521,7 @@ func TestOnDeleteCascadeCounters(t *testing.T) {
 	ctx := context.Background()
 	s := testDB(t)
 
-	tenant, _ := s.CreateTenant(ctx, "cascade-counter", "")
+	tenant, _ := s.CreateTenant(ctx, "cascade-counter", "", nil)
 	s.RecordUsage(tenant.ID, "traces", 200, 100)
 	s.FlushCounters()
 
@@ -543,7 +543,7 @@ func TestGetUsageDataFromCounters(t *testing.T) {
 	ctx := context.Background()
 	s := testDB(t)
 
-	tenant, _ := s.CreateTenant(ctx, "counters-usage", "")
+	tenant, _ := s.CreateTenant(ctx, "counters-usage", "", nil)
 	// Insert counter rows directly across multiple hour buckets
 	_, err := s.db.ExecContext(ctx, `
 		INSERT INTO usage_counters (tenant_id, signal_type, hour_bucket, requests, bytes, errors) VALUES
@@ -569,5 +569,83 @@ func TestGetUsageDataFromCounters(t *testing.T) {
 	}
 	if totalRequests != 25 {
 		t.Fatalf("expected 25 total requests, got %d", totalRequests)
+	}
+}
+
+func TestTenantRateLimitColumns(t *testing.T) {
+	ctx := context.Background()
+	s := testDB(t)
+
+	rps := int64(10)
+	burst := int64(5000)
+	quota := int64(1048576) // 1 MB
+	tenant, err := s.CreateTenant(ctx, "limits-app", "with limits", &RateLimitParams{
+		RateLimitRPS:   &rps,
+		BurstBytes:     &burst,
+		DailyByteQuota: &quota,
+	})
+	if err != nil {
+		t.Fatalf("create: %v", err)
+	}
+
+	// Read back via LookupTenantByID
+	found, err := s.LookupTenantByID(ctx, tenant.ID)
+	if err != nil {
+		t.Fatalf("lookup: %v", err)
+	}
+	if found.RateLimitRPS == nil || *found.RateLimitRPS != 10 {
+		t.Fatalf("expected rps 10, got %v", found.RateLimitRPS)
+	}
+	if found.BurstBytes == nil || *found.BurstBytes != 5000 {
+		t.Fatalf("expected burst 5000, got %v", found.BurstBytes)
+	}
+	if found.DailyByteQuota == nil || *found.DailyByteQuota != 1048576 {
+		t.Fatalf("expected quota 1048576, got %v", found.DailyByteQuota)
+	}
+
+	// Update limits
+	newRps := int64(50)
+	newQuota := int64(2097152)
+	if err := s.UpdateTenant(ctx, tenant.ID, "limits-app", "updated", true, &RateLimitParams{
+		RateLimitRPS:   &newRps,
+		DailyByteQuota: &newQuota,
+	}); err != nil {
+		t.Fatalf("update: %v", err)
+	}
+	found, _ = s.LookupTenantByID(ctx, tenant.ID)
+	if found.RateLimitRPS == nil || *found.RateLimitRPS != 50 {
+		t.Fatalf("expected rps 50 after update, got %v", found.RateLimitRPS)
+	}
+	if found.BurstBytes != nil {
+		t.Fatalf("expected burst cleared (nil) after update, got %v", *found.BurstBytes)
+	}
+	if found.DailyByteQuota == nil || *found.DailyByteQuota != 2097152 {
+		t.Fatalf("expected quota 2097152 after update, got %v", found.DailyByteQuota)
+	}
+
+	// Create without limits → NULL
+	noLimits, _ := s.CreateTenant(ctx, "no-limits", "", nil)
+	found, _ = s.LookupTenantByID(ctx, noLimits.ID)
+	if found.RateLimitRPS != nil || found.BurstBytes != nil || found.DailyByteQuota != nil {
+		t.Fatal("expected nil limits for tenant created without limits")
+	}
+}
+
+func TestGetDailyByteUsage(t *testing.T) {
+	ctx := context.Background()
+	s := testDB(t)
+	tenant, _ := s.CreateTenant(ctx, "qtest", "usage-by-day", nil)
+
+	// Insert 300 bytes for today
+	s.RecordUsage(tenant.ID, "traces", 200, 100)
+	s.RecordUsage(tenant.ID, "traces", 200, 200)
+	s.FlushCounters()
+
+	used, err := s.GetDailyByteUsage(ctx, tenant.ID)
+	if err != nil {
+		t.Fatalf("GetDailyByteUsage: %v", err)
+	}
+	if used != 300 {
+		t.Fatalf("expected 300 bytes today, got %d", used)
 	}
 }

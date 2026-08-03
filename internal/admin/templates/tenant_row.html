@@ -15,7 +15,15 @@
 {{end}}
 <tr id="tenant-{{.ID}}" class="hover:bg-gray-800/50 transition-colors group">
     <td class="px-6 py-4 text-sm font-medium text-white">{{.Name}}</td>
-    <td class="px-6 py-4 text-sm font-mono text-gray-400">{{.KeyPrefix}}&hellip;</td>
+    <td class="px-6 py-4 text-sm font-mono text-gray-400">{{.KeyPrefix}}&hellip;
+        {{if or .RateLimitRPS .BurstBytes .DailyByteQuota}}
+        <div class="mt-1 font-sans text-xs text-gray-500">
+            {{if .RateLimitRPS}}{{.RateLimitRPS}} rps{{end}}
+            {{if .BurstBytes}}&middot; {{megaBytes .BurstBytes}} MB burst{{end}}
+            {{if .DailyByteQuota}}&middot; {{megaBytes .DailyByteQuota}} MB/day{{end}}
+        </div>
+        {{end}}
+    </td>
     <td class="px-6 py-4">
         {{if .Active}}
         <span class="inline-flex items-center rounded-full bg-emerald-500/10 px-2 py-0.5 text-xs font-medium text-emerald-400 ring-1 ring-inset ring-emerald-500/20">Active</span>
