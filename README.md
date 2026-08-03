@@ -139,6 +139,9 @@ Image ~10 MB. Multi-stage build: `golang:1.25-alpine` → `alpine:3.21`.
 
 ## Certificate Lifecycle (step-ca)
 
+> Full enablement guide: **[CA_ENABLEMENT.md](CA_ENABLEMENT.md)** — provisioner
+> setup, config, verification, device installation, and troubleshooting.
+
 Optional integration with [step-ca](https://smallstep.com/docs/step-ca/) for
 automated client-certificate issuance, renewal, and revocation. The proxy is
 **only an API client** — it holds no CA keys and never stores private keys.
