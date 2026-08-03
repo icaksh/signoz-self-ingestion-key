@@ -11,6 +11,7 @@ import (
 
 	"github.com/sismedika/otlp-proxy/internal/admin"
 	"github.com/sismedika/otlp-proxy/internal/auth"
+	"github.com/sismedika/otlp-proxy/internal/ca"
 	"github.com/sismedika/otlp-proxy/internal/config"
 	"github.com/sismedika/otlp-proxy/internal/proxy"
 	"github.com/sismedika/otlp-proxy/internal/ratelimit"
@@ -51,7 +52,66 @@ func main() {
 		MaxHeaderBytes:    1 << 16,
 	}
 
-	adminServer := admin.NewServer(st, cfg.AdminListenAddr, cfg.SessionSigningKey, cfg.AdminCookieSecure)
+	// step-ca certificate lifecycle (optional)
+	var caClient *ca.Client
+	var dl *ca.DownloadManager
+	certLifetime := 2160 * time.Hour
+	if cfg.CAEnabled {
+		var provKey []byte
+		if cfg.CAProvisionerKey != "" {
+			provKey = []byte(cfg.CAProvisionerKey)
+		} else {
+			provKey, err = os.ReadFile(cfg.CAProvisionerKeyFile)
+			if err != nil {
+				log.Fatalf("ca: read provisioner key: %v", err)
+			}
+		}
+
+		rootCert, err := os.ReadFile(cfg.CARootCertFile)
+		if err != nil {
+			log.Fatalf("ca: read root cert: %v", err)
+		}
+
+		certLifetime, err = time.ParseDuration(cfg.CACertLifetime)
+		if err != nil {
+			log.Fatalf("ca: parse cert lifetime: %v", err)
+		}
+
+		caClient, err = ca.NewClient(ca.ClientConfig{
+			Endpoint:        cfg.CAEndpoint,
+			ProvisionerName: cfg.CAProvisionerName,
+			ProvisionerKey:  provKey,
+			RootCert:        rootCert,
+			Lifetime:        certLifetime,
+		})
+		if err != nil {
+			log.Fatalf("ca: %v", err)
+		}
+
+		dl = ca.NewDownloadManager()
+		defer dl.Stop()
+
+		renewalCtx, renewalCancel := context.WithCancel(context.Background())
+		defer renewalCancel()
+		renewalSrv, err := ca.NewRenewalServer(ca.RenewalConfig{
+			ListenAddr:     cfg.CARenewalListenAddr,
+			ClientCAFile:   cfg.SyslogClientCAFile,
+			ServerCertFile: cfg.SyslogServerCertFile,
+			ServerKeyFile:  cfg.SyslogServerKeyFile,
+		}, st, caClient)
+		if err != nil {
+			log.Fatalf("ca renewal: %v", err)
+		}
+		go func() {
+			log.Printf("[ca] renewal listener on %s (mTLS)", cfg.CARenewalListenAddr)
+			if err := renewalSrv.ListenAndServe(renewalCtx); err != nil {
+				log.Printf("[ca] renewal: %v", err)
+			}
+		}()
+	}
+
+	adminServer := admin.NewServer(st, cfg.AdminListenAddr, cfg.SessionSigningKey, cfg.AdminCookieSecure,
+		caClient, dl, cfg.CAExternalHostname, cfg.CASyslogRelayPort, certLifetime)
 	adminServer.ReadHeaderTimeout = 5 * time.Second
 	adminServer.ReadTimeout = 30 * time.Second
 	adminServer.WriteTimeout = 30 * time.Second

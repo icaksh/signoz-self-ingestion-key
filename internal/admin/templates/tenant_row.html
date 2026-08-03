@@ -34,6 +34,7 @@
     <td class="px-6 py-4">
         <div class="flex items-center gap-2">
             <a href="/tenants/{{.ID}}/usage" class="rounded-lg px-3 py-1.5 text-xs font-medium text-gray-300 hover:bg-gray-700 transition-colors">Usage</a>
+            <a href="/tenants/{{.ID}}/certificates" class="rounded-lg px-3 py-1.5 text-xs font-medium text-gray-300 hover:bg-gray-700 transition-colors">Certificates</a>
             <button hx-get="/tenants/{{.ID}}/edit" hx-target="#form-area" hx-swap="innerHTML"
                 class="rounded-lg px-3 py-1.5 text-xs font-medium text-gray-300 hover:bg-gray-700 transition-colors">Edit</button>
             <button hx-post="/tenants/{{.ID}}/regenerate" hx-target="#tenant-{{.ID}}" hx-swap="outerHTML" hx-confirm="Revoke old key and generate a new one?"

@@ -136,3 +136,39 @@ docker run -e SIGNOZ_ENDPOINT=http://localhost:4318 -p 4318:4318 -p 8080:8080 ot
 ```
 
 Image ~10 MB. Multi-stage build: `golang:1.25-alpine` → `alpine:3.21`.
+
+## Certificate Lifecycle (step-ca)
+
+Optional integration with [step-ca](https://smallstep.com/docs/step-ca/) for
+automated client-certificate issuance, renewal, and revocation. The proxy is
+**only an API client** — it holds no CA keys and never stores private keys.
+It authenticates with short-lived provisioner JWTs.
+
+Enable with `CA_ENABLED=true` and set `CA_ENDPOINT`, `CA_PROVISIONER_NAME`,
+and either `CA_PROVISIONER_KEY` (inline JWK JSON) or
+`CA_PROVISIONER_KEY_FILE` (path). `CA_ROOT_CERT_FILE` and
+`CA_EXTERNAL_HOSTNAME` are required.
+
+- **Admin UI** (`/tenants/{id}/certificates`): issue via CSR upload (preferred)
+  or server-side keypair generation (single-use download link, 10-min expiry,
+  key held only in memory), plus renew and revoke actions.
+- **Revocation is immediate**: revoking sets `revoked_at` locally, so the
+  Phase 5 mTLS listener rejects new connections from that cert right away.
+- **mTLS renewal endpoint** (`:6543/renew`): a device holding a valid client
+  cert can renew it with a new key via `POST /renew` over mTLS.
+- **Client bundle**: the download is a zip with `ca.crt`, `client.crt`,
+  `client.key`, `60-signoz.conf` (rsyslog), and an idempotent `install.sh`
+  that validates the rsyslog config and rolls back on failure.
+
+| Variable | Default | Description |
+|:---|:---|:---|
+| `CA_ENABLED` | `false` | Enable step-ca integration | 
+| `CA_ENDPOINT` | — | step-ca base URL, e.g. `https://step-ca:9000` |
+| `CA_PROVISIONER_NAME` | — | Provisioner name for JWT auth |
+| `CA_PROVISIONER_KEY` | — | Inline provisioner JWK JSON |
+| `CA_PROVISIONER_KEY_FILE` | — | Path to JWK file (alternative) |
+| `CA_ROOT_CERT_FILE` | — | Root CA PEM (for client bundles) |
+| `CA_CERT_LIFETIME` | `2160h` | Issued certificate lifetime (90d) |
+| `CA_RENEWAL_LISTEN_ADDR` | `:6543` | mTLS renewal endpoint |
+| `CA_EXTERNAL_HOSTNAME` | — | Public hostname for install.sh/rsyslog |
+| `CA_SYSLOG_RELAY_PORT` | `6514` | Syslog relay port in rsyslog conf |

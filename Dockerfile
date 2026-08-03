@@ -17,7 +17,7 @@ WORKDIR /app
 
 COPY --from=builder /build/proxy .
 
-EXPOSE 4318 8080 6514
+EXPOSE 4318 8080 6514 6543
 
 VOLUME ["/data"]
 ENV DB_PATH=/data/tenants.db

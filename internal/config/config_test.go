@@ -212,3 +212,54 @@ func TestSyslogInvalidTimeout(t *testing.T) {
 		t.Fatal("expected error for invalid timeout")
 	}
 }
+
+func TestCADisabledByDefault(t *testing.T) {
+	t.Setenv("SIGNOZ_ENDPOINT", "http://localhost:4318")
+	t.Setenv("SESSION_SIGNING_KEY", strings.Repeat("ab", 32))
+	cfg, err := Load()
+	if err != nil {
+		t.Fatalf("load: %v", err)
+	}
+	if cfg.CAEnabled {
+		t.Fatal("expected CA disabled by default")
+	}
+}
+
+func TestCAEnabledRequiresConfig(t *testing.T) {
+	t.Setenv("SIGNOZ_ENDPOINT", "http://localhost:4318")
+	t.Setenv("SESSION_SIGNING_KEY", strings.Repeat("ab", 32))
+	t.Setenv("CA_ENABLED", "true")
+
+	// Missing endpoint
+	_, err := Load()
+	if err == nil || !strings.Contains(err.Error(), "CA_ENDPOINT") {
+		t.Fatalf("expected CA_ENDPOINT error, got: %v", err)
+	}
+}
+
+func TestCAEnabledWithFullConfig(t *testing.T) {
+	t.Setenv("SIGNOZ_ENDPOINT", "http://localhost:4318")
+	t.Setenv("SESSION_SIGNING_KEY", strings.Repeat("ab", 32))
+	t.Setenv("CA_ENABLED", "true")
+	t.Setenv("CA_ENDPOINT", "https://step-ca:9000")
+	t.Setenv("CA_PROVISIONER_NAME", "proxy")
+	t.Setenv("CA_PROVISIONER_KEY", `{"kty":"EC"}`)
+	root := t.TempDir() + "/root.crt"
+	os.WriteFile(root, []byte("x"), 0600)
+	t.Setenv("CA_ROOT_CERT_FILE", root)
+	t.Setenv("CA_EXTERNAL_HOSTNAME", "relay.example.com")
+
+	cfg, err := Load()
+	if err != nil {
+		t.Fatalf("load: %v", err)
+	}
+	if !cfg.CAEnabled {
+		t.Fatal("expected CA enabled")
+	}
+	if cfg.CACertLifetime != "2160h" {
+		t.Fatalf("expected default 2160h lifetime, got %q", cfg.CACertLifetime)
+	}
+	if cfg.CARenewalListenAddr != ":6543" {
+		t.Fatalf("expected :6543 renewal addr, got %q", cfg.CARenewalListenAddr)
+	}
+}

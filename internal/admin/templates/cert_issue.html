@@ -1,0 +1,29 @@
+{{define "cert_issue"}}
+{{template "base"}}
+<div class="mb-6">
+    <h1 class="text-xl font-bold text-white">Issue Certificate: {{.Tenant.Name}}</h1>
+    <a href="/tenants/{{.Tenant.ID}}/certificates" class="text-sm text-gray-400 hover:text-indigo-400 transition-colors">&larr; Back to certificates</a>
+</div>
+<div id="form-area"></div>
+<div class="grid grid-cols-1 gap-6">
+    <div class="rounded-xl border border-gray-800 bg-gray-900/50 p-6">
+        <h3 class="mb-2 text-sm font-semibold text-gray-300">CSR-based (preferred)</h3>
+        <p class="mb-4 text-xs text-gray-500">Paste a PKCS#10 CSR. The private key stays on the device.</p>
+        <form hx-post="/tenants/{{.Tenant.ID}}/certificates" hx-target="#form-area" hx-swap="innerHTML" class="space-y-4">
+            <textarea name="csr" rows="8" required placeholder="-----BEGIN CERTIFICATE REQUEST-----"
+                class="w-full rounded-lg border border-gray-700 bg-gray-800 px-3 py-2 font-mono text-xs text-white placeholder-gray-500 focus:border-indigo-500 focus:outline-none focus:ring-1 focus:ring-indigo-500"></textarea>
+            <p class="text-xs text-gray-500">Generate one locally with:<br>
+                <code class="font-mono text-indigo-400">openssl req -new -newkey ec -pkeyopt ec_paramgen_curve:P-256 -nodes -keyout client.key -out client.csr -subj "/CN=my-device"</code>
+            </p>
+            <button type="submit" class="rounded-lg bg-indigo-600 px-4 py-2 text-sm font-semibold text-white hover:bg-indigo-500 transition-colors">Sign CSR</button>
+        </form>
+    </div>
+    <div class="rounded-xl border border-gray-800 bg-gray-900/50 p-6">
+        <h3 class="mb-2 text-sm font-semibold text-gray-300">Or generate a keypair here</h3>
+        <p class="mb-4 text-xs text-gray-500">Convenience fallback — the private key is delivered once via a single-use download link.</p>
+        <button hx-post="/tenants/{{.Tenant.ID}}/certificates/keygen" hx-target="#form-area" hx-swap="innerHTML"
+            class="rounded-lg bg-emerald-600 px-4 py-2 text-sm font-semibold text-white hover:bg-emerald-500 transition-colors">Generate Keypair</button>
+    </div>
+</div>
+{{template "base_end"}}
+{{end}}

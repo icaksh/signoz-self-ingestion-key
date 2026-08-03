@@ -1154,3 +1154,16 @@ func (s *Store) ListCertificates(ctx context.Context, tenantID int64) ([]Certifi
 	}
 	return certs, rows.Err()
 }
+
+// LookupCertificateByID fetches a certificate by its database ID.
+func (s *Store) LookupCertificateByID(ctx context.Context, id int64) (*Certificate, error) {
+	c, err := scanCertificate(s.db.QueryRowContext(ctx,
+		`SELECT `+certColumns+` FROM certificates WHERE id = ?`, id))
+	if err == sql.ErrNoRows {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	return c, nil
+}

@@ -38,6 +38,17 @@ type Config struct {
 	SyslogMaxConnections  int
 	SyslogConnIdleTimeout time.Duration
 	SyslogCollectorAddr   string
+
+	CAEnabled            bool
+	CAEndpoint           string
+	CAProvisionerName    string
+	CAProvisionerKey     string
+	CAProvisionerKeyFile string
+	CARootCertFile       string
+	CACertLifetime       string
+	CARenewalListenAddr  string
+	CAExternalHostname   string
+	CASyslogRelayPort    int
 }
 
 func Load() (*Config, error) {
@@ -110,6 +121,39 @@ func Load() (*Config, error) {
 			if _, err := os.Stat(f); err != nil {
 				return nil, fmt.Errorf("cannot access %s: %w", f, err)
 			}
+		}
+	}
+
+	// step-ca certificate lifecycle (optional)
+	c.CAEnabled = os.Getenv("CA_ENABLED") == "true"
+	if c.CAEnabled {
+		c.CAEndpoint = os.Getenv("CA_ENDPOINT")
+		c.CAProvisionerName = os.Getenv("CA_PROVISIONER_NAME")
+		c.CAProvisionerKey = os.Getenv("CA_PROVISIONER_KEY")
+		c.CAProvisionerKeyFile = os.Getenv("CA_PROVISIONER_KEY_FILE")
+		c.CARootCertFile = os.Getenv("CA_ROOT_CERT_FILE")
+		c.CACertLifetime = envOrDefault("CA_CERT_LIFETIME", "2160h")
+		c.CARenewalListenAddr = envOrDefault("CA_RENEWAL_LISTEN_ADDR", ":6543")
+		c.CAExternalHostname = os.Getenv("CA_EXTERNAL_HOSTNAME")
+		c.CASyslogRelayPort = envOrDefaultInt("CA_SYSLOG_RELAY_PORT", 6514)
+
+		if c.CAEndpoint == "" {
+			return nil, fmt.Errorf("CA_ENABLED=true requires CA_ENDPOINT")
+		}
+		if c.CAProvisionerName == "" {
+			return nil, fmt.Errorf("CA_ENABLED=true requires CA_PROVISIONER_NAME")
+		}
+		if c.CAProvisionerKey == "" && c.CAProvisionerKeyFile == "" {
+			return nil, fmt.Errorf("CA_ENABLED=true requires CA_PROVISIONER_KEY or CA_PROVISIONER_KEY_FILE")
+		}
+		if c.CARootCertFile == "" {
+			return nil, fmt.Errorf("CA_ENABLED=true requires CA_ROOT_CERT_FILE")
+		}
+		if c.CAExternalHostname == "" {
+			return nil, fmt.Errorf("CA_ENABLED=true requires CA_EXTERNAL_HOSTNAME")
+		}
+		if _, err := os.Stat(c.CARootCertFile); err != nil {
+			return nil, fmt.Errorf("cannot access CA_ROOT_CERT_FILE %s: %w", c.CARootCertFile, err)
 		}
 	}
 

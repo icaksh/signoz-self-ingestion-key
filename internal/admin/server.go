@@ -14,6 +14,7 @@ import (
 
 	"golang.org/x/crypto/bcrypt"
 
+	"github.com/sismedika/otlp-proxy/internal/ca"
 	"github.com/sismedika/otlp-proxy/internal/store"
 )
 
@@ -29,16 +30,21 @@ type Server struct {
 	loginLimiter *LoginLimiter
 }
 
-func NewServer(st *store.Store, addr string, signingKey []byte, cookieSecure bool) *http.Server {
+func NewServer(st *store.Store, addr string, signingKey []byte, cookieSecure bool, caClient *ca.Client, dl *ca.DownloadManager, caExternalHostname string, caSyslogPort int, certLifetime time.Duration) *http.Server {
 	funcMap := template.FuncMap{
-		"maskKey":   maskKey,
-		"megaBytes": megaBytes,
-		"percent":   percentOf,
+		"maskKey":      maskKey,
+		"megaBytes":    megaBytes,
+		"percent":      percentOf,
+		"certRowData":  certRowData,
+		"formatTime":   formatTime,
+		"expired":      expired,
+		"expiringSoon": expiringSoon,
+		"daysUntil":    daysUntil,
 	}
 
 	tmpl := template.Must(template.New("").Funcs(funcMap).ParseFS(templateFS, "templates/*.html"))
 
-	h := NewHandlers(st, tmpl)
+	h := NewHandlers(st, tmpl, caClient, dl, caExternalHostname, caSyslogPort, certLifetime)
 	s := &Server{store: st, tmpl: tmpl, h: h, signingKey: signingKey, cookieSecure: cookieSecure, loginLimiter: NewLoginLimiter()}
 
 	mux := http.NewServeMux()
@@ -61,6 +67,15 @@ func NewServer(st *store.Store, addr string, signingKey []byte, cookieSecure boo
 	mux.HandleFunc("GET /tenants/{id}/usage", s.requireAuth(h.UsagePage))
 	mux.HandleFunc("GET /tenants/{id}/usage/data", s.requireAuth(h.UsageData))
 	mux.HandleFunc("GET /tenants/{id}/quota", s.requireAuth(h.QuotaFragment))
+	mux.HandleFunc("GET /tenants/{id}/certificates", s.requireAuth(h.CertificatesPage))
+	mux.HandleFunc("GET /tenants/{id}/certificates/new", s.requireAuth(h.CertificateIssueForm))
+	mux.HandleFunc("POST /tenants/{id}/certificates", s.requireAuth(h.CertificateIssue))
+	mux.HandleFunc("POST /tenants/{id}/certificates/keygen", s.requireAuth(h.CertificateIssueWithKeygen))
+	mux.HandleFunc("POST /tenants/{id}/certificates/{certId}/renew", s.requireAuth(h.CertificateRenew))
+	mux.HandleFunc("POST /tenants/{id}/certificates/{certId}/revoke", s.requireAuth(h.CertificateRevoke))
+	mux.HandleFunc("GET /tenants/{id}/certificates/{certId}/download", s.requireAuth(h.CertificateDownload))
+	// Public — no auth, single-use token
+	mux.HandleFunc("GET /api/certificates/{token}/download", h.DownloadByToken)
 	mux.HandleFunc("GET /tenants/cancel", s.requireAuth(h.CancelForm))
 	mux.HandleFunc("GET /users", s.requireAuth(h.UsersPage))
 	mux.HandleFunc("POST /users", s.requireAuth(h.CreateUser))
@@ -106,6 +121,28 @@ func percentOf(used, quota int64) int {
 		pct = 0
 	}
 	return pct
+}
+
+// --- certificate template helpers ---
+
+func certRowData(cert store.Certificate, tenantID int64, warnDays int) CertRowData {
+	return CertRowData{Certificate: cert, TenantID: tenantID, ExpiryWarnDays: warnDays}
+}
+
+func formatTime(t time.Time) string {
+	return t.UTC().Format("2006-01-02")
+}
+
+func expired(t time.Time) bool {
+	return time.Now().After(t)
+}
+
+func expiringSoon(t time.Time, warnDays int) bool {
+	return !time.Now().After(t) && time.Now().Add(time.Duration(warnDays)*24*time.Hour).After(t)
+}
+
+func daysUntil(t time.Time) int {
+	return int(time.Until(t).Hours() / 24)
 }
 
 func (s *Server) healthz(w http.ResponseWriter, r *http.Request) {

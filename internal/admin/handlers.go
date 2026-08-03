@@ -7,15 +7,22 @@ import (
 	"net/http"
 	"strconv"
 	"strings"
+	"time"
 
 	"golang.org/x/crypto/bcrypt"
 
+	"github.com/sismedika/otlp-proxy/internal/ca"
 	"github.com/sismedika/otlp-proxy/internal/store"
 )
 
 type Handlers struct {
-	store *store.Store
-	tmpl  *template.Template
+	store              *store.Store
+	tmpl               *template.Template
+	caClient           *ca.Client
+	downloadManager    *ca.DownloadManager
+	caExternalHostname string
+	caSyslogPort       int
+	certLifetime       time.Duration
 }
 
 type FormData struct {
@@ -37,8 +44,16 @@ type UsersPage struct {
 	Users []store.User
 }
 
-func NewHandlers(st *store.Store, tmpl *template.Template) *Handlers {
-	return &Handlers{store: st, tmpl: tmpl}
+func NewHandlers(st *store.Store, tmpl *template.Template, caClient *ca.Client, dl *ca.DownloadManager, caExternalHostname string, caSyslogPort int, certLifetime time.Duration) *Handlers {
+	return &Handlers{
+		store:              st,
+		tmpl:               tmpl,
+		caClient:           caClient,
+		downloadManager:    dl,
+		caExternalHostname: caExternalHostname,
+		caSyslogPort:       caSyslogPort,
+		certLifetime:       certLifetime,
+	}
 }
 
 func (h *Handlers) render(w http.ResponseWriter, name string, data any) {

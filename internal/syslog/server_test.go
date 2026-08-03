@@ -484,3 +484,26 @@ func TestLimiterOverLimitClosesConnection(t *testing.T) {
 	// Second connection within the same second → rejected
 	env.expectClosed(t, cfg)
 }
+
+func TestRevokeBlocksPhase4Connection(t *testing.T) {
+	env := newTestEnv(t)
+	clientCert, clientKey := env.newClientCert(t, "revoke-blocks")
+	env.registerCert(t, "revoke-blocks", clientCert)
+
+	cfg := env.clientTLS(clientCert, clientKey)
+
+	// Connection accepted while cert is active
+	conn, err := env.dialTLS(t, cfg)
+	if err != nil {
+		t.Fatalf("first dial: %v", err)
+	}
+	conn.Close()
+
+	// Simulate the admin-UI revoke action
+	if err := env.st.RevokeCertificate(context.Background(), fingerprint(clientCert)); err != nil {
+		t.Fatalf("revoke: %v", err)
+	}
+
+	// Next connection is rejected immediately (fingerprint lookup fails)
+	env.expectClosed(t, cfg)
+}

@@ -1,0 +1,76 @@
+#!/bin/sh
+# Signoz Syslog Certificate Installer
+# Idempotent — safe to run multiple times
+set -e
+
+CERT_DIR="/etc/ssl/signoz"
+RSYSLOG_CONF_DIR="/etc/rsyslog.d"
+BACKUP_DIR="${CERT_DIR}/.backup"
+NEW_CERT_DIR="./certs"
+
+# --- preflight ---
+if [ "$(id -u)" -ne 0 ]; then
+    echo "ERROR: must run as root" >&2
+    exit 1
+fi
+
+# --- create directories ---
+mkdir -p "${CERT_DIR}" "${RSYSLOG_CONF_DIR}" "${BACKUP_DIR}" /var/spool/rsyslog
+
+# --- backup existing files ---
+TIMESTAMP=$(date +%Y%m%d%H%M%S)
+for f in ca.crt client.crt client.key; do
+    src="${CERT_DIR}/${f}"
+    if [ -f "${src}" ]; then
+        cp -p "${src}" "${BACKUP_DIR}/${f}.${TIMESTAMP}"
+    fi
+done
+if [ -f "${RSYSLOG_CONF_DIR}/60-signoz.conf" ]; then
+    cp -p "${RSYSLOG_CONF_DIR}/60-signoz.conf" "${BACKUP_DIR}/60-signoz.conf.${TIMESTAMP}"
+fi
+
+# --- install certificates ---
+install -m 0644 "${NEW_CERT_DIR}/ca.crt" "${CERT_DIR}/ca.crt"
+install -m 0644 "${NEW_CERT_DIR}/client.crt" "${CERT_DIR}/client.crt"
+if [ -f "${NEW_CERT_DIR}/client.key" ]; then
+    install -m 0600 "${NEW_CERT_DIR}/client.key" "${CERT_DIR}/client.key"
+fi
+
+# --- install rsyslog config ---
+install -m 0644 "${NEW_CERT_DIR}/60-signoz.conf" "${RSYSLOG_CONF_DIR}/60-signoz.conf"
+
+# --- validate rsyslog configuration ---
+echo "Validating rsyslog configuration..."
+if ! rsyslogd -N1 >/dev/null 2>&1; then
+    echo "ERROR: rsyslog configuration is invalid - rolling back" >&2
+
+    for f in ca.crt client.crt client.key; do
+        backup="${BACKUP_DIR}/${f}.${TIMESTAMP}"
+        if [ -f "${backup}" ]; then
+            cp -p "${backup}" "${CERT_DIR}/${f}"
+        fi
+    done
+
+    backup_conf="${BACKUP_DIR}/60-signoz.conf.${TIMESTAMP}"
+    if [ -f "${backup_conf}" ]; then
+        cp -p "${backup_conf}" "${RSYSLOG_CONF_DIR}/60-signoz.conf"
+    else
+        rm -f "${RSYSLOG_CONF_DIR}/60-signoz.conf"
+    fi
+
+    exit 1
+fi
+
+# --- restart rsyslog ---
+echo "Configuration valid - restarting rsyslog..."
+if command -v systemctl >/dev/null 2>&1; then
+    systemctl restart rsyslog
+elif command -v service >/dev/null 2>&1; then
+    service rsyslog restart
+else
+    echo "WARNING: could not restart rsyslog (no systemctl or service found)" >&2
+    echo "Please restart rsyslog manually"
+    exit 0
+fi
+
+echo "Signoz syslog relay installed successfully."
