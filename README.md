@@ -68,6 +68,48 @@ supported.
 
 Health: `GET /healthz` on both the proxy and admin returns `{"status":"ok"}`.
 
+## Syslog-over-TLS (mTLS)
+
+Optional RFC 5425 syslog ingestion with mutual TLS. Clients (rsyslog,
+syslog-ng) connect with a client certificate signed by your private CA; the
+proxy authenticates each connection by cert SHA-256 fingerprint and stamps
+the authenticated tenant into the RFC 5424 structured-data:
+
+```
+[tenant@<id> tenant-id="<id>"]
+```
+
+Any client-supplied `tenant@` SD-ID is stripped before the fresh one is
+injected. Framed messages are forwarded over plain TCP to a local OTel
+Collector syslog receiver.
+
+Enable with `SYSLOG_ENABLED=true` and set `SYSLOG_SERVER_CERT_FILE`,
+`SYSLOG_SERVER_KEY_FILE`, `SYSLOG_CLIENT_CA_FILE`. The OTel Collector syslog
+receiver must bind to `127.0.0.1` only:
+
+```yaml
+receivers:
+  syslog:
+    tcp:
+      listen_address: "127.0.0.1:5140"
+    protocol: rfc5424
+```
+
+> The OTel Collector syslog receiver must bind to 127.0.0.1 only. It must
+> never be exposed to the internet.
+
+| Variable | Default | Description |
+|:---|:---|:---|
+| `SYSLOG_ENABLED` | `false` | Enable the syslog listener (requires certs) |
+| `SYSLOG_LISTEN_ADDR` | `:6514` | Syslog mTLS listen address |
+| `SYSLOG_SERVER_CERT_FILE` | — | Server TLS cert (publicly trusted) |
+| `SYSLOG_SERVER_KEY_FILE` | — | Server TLS key |
+| `SYSLOG_CLIENT_CA_FILE` | — | Private CA verifying client certs |
+| `SYSLOG_MAX_FRAME_BYTES` | `65536` | Max RFC 5425 frame size |
+| `SYSLOG_MAX_CONNECTIONS` | `1000` | Max concurrent connections |
+| `SYSLOG_CONN_IDLE_TIMEOUT` | `300s` | Idle connection timeout |
+| `SYSLOG_COLLECTOR_ADDR` | `127.0.0.1:5140` | OTel Collector syslog receiver |
+
 ## Admin Dashboard
 
 - Tenant CRUD with key management (show prefix, revoke/regenerate)

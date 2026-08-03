@@ -2,6 +2,7 @@ package config
 
 import (
 	"encoding/hex"
+	"os"
 	"strings"
 	"testing"
 )
@@ -136,5 +137,78 @@ func TestMaxBodyBytes(t *testing.T) {
 	cfg, _ = Load()
 	if cfg.MaxBodyBytes != 4194304 {
 		t.Fatalf("expected fallback 4194304, got %d", cfg.MaxBodyBytes)
+	}
+}
+
+func TestSyslogDisabledByDefault(t *testing.T) {
+	t.Setenv("SIGNOZ_ENDPOINT", "http://localhost:4318")
+	t.Setenv("SESSION_SIGNING_KEY", strings.Repeat("ab", 32))
+	t.Setenv("SYSLOG_ENABLED", "")
+	cfg, err := Load()
+	if err != nil {
+		t.Fatalf("load: %v", err)
+	}
+	if cfg.SyslogEnabled {
+		t.Fatal("expected syslog disabled by default")
+	}
+	if cfg.SyslogListenAddr != ":6514" {
+		t.Fatalf("expected :6514, got %q", cfg.SyslogListenAddr)
+	}
+	if cfg.SyslogMaxFrameBytes != 65536 {
+		t.Fatalf("expected 65536 max frame bytes, got %d", cfg.SyslogMaxFrameBytes)
+	}
+}
+
+func TestSyslogEnabledRequiresCerts(t *testing.T) {
+	t.Setenv("SIGNOZ_ENDPOINT", "http://localhost:4318")
+	t.Setenv("SESSION_SIGNING_KEY", strings.Repeat("ab", 32))
+	t.Setenv("SYSLOG_ENABLED", "true")
+	// No cert files set
+	_, err := Load()
+	if err == nil {
+		t.Fatal("expected error when SYSLOG_ENABLED=true without cert files")
+	}
+	if !strings.Contains(err.Error(), "SYSLOG_SERVER_CERT_FILE") {
+		t.Fatalf("expected missing cert error, got: %v", err)
+	}
+}
+
+func TestSyslogEnabledWithCerts(t *testing.T) {
+	t.Setenv("SIGNOZ_ENDPOINT", "http://localhost:4318")
+	t.Setenv("SESSION_SIGNING_KEY", strings.Repeat("ab", 32))
+	t.Setenv("SYSLOG_ENABLED", "true")
+
+	dir := t.TempDir()
+	cert := dir + "/server.crt"
+	key := dir + "/server.key"
+	ca := dir + "/ca.crt"
+	for _, f := range []string{cert, key, ca} {
+		if err := os.WriteFile(f, []byte("x"), 0600); err != nil {
+			t.Fatalf("write: %v", err)
+		}
+	}
+	t.Setenv("SYSLOG_SERVER_CERT_FILE", cert)
+	t.Setenv("SYSLOG_SERVER_KEY_FILE", key)
+	t.Setenv("SYSLOG_CLIENT_CA_FILE", ca)
+
+	cfg, err := Load()
+	if err != nil {
+		t.Fatalf("load: %v", err)
+	}
+	if !cfg.SyslogEnabled {
+		t.Fatal("expected syslog enabled")
+	}
+	if cfg.SyslogConnIdleTimeout.String() != "5m0s" {
+		t.Fatalf("expected 5m idle timeout, got %s", cfg.SyslogConnIdleTimeout)
+	}
+}
+
+func TestSyslogInvalidTimeout(t *testing.T) {
+	t.Setenv("SIGNOZ_ENDPOINT", "http://localhost:4318")
+	t.Setenv("SESSION_SIGNING_KEY", strings.Repeat("ab", 32))
+	t.Setenv("SYSLOG_CONN_IDLE_TIMEOUT", "bogus")
+	_, err := Load()
+	if err == nil {
+		t.Fatal("expected error for invalid timeout")
 	}
 }

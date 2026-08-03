@@ -6,6 +6,7 @@ services:
       - "${PROXY_PORT:-4318}:4318"
       # Admin port — bind to localhost only in production. Expose only for local dev:
       # - "127.0.0.1:${ADMIN_PORT:-8080}:8080"
+      - "${SYSLOG_PORT:-6514}:6514"
     environment:
       - SIGNOZ_ENDPOINT=${SIGNOZ_ENDPOINT:-http://localhost:4318}
       - SIGNOZ_INGESTION_KEY=${SIGNOZ_INGESTION_KEY:-}
@@ -13,8 +14,19 @@ services:
       - ADMIN_PORT=8080
       - DB_PATH=/data/tenants.db
       - USAGE_RETENTION_DAYS=${USAGE_RETENTION_DAYS:-90}
+      # Syslog mTLS — optional; cert files must exist when SYSLOG_ENABLED=true
+      - SYSLOG_ENABLED=${SYSLOG_ENABLED:-false}
+      - SYSLOG_LISTEN_ADDR=:6514
+      - SYSLOG_SERVER_CERT_FILE=/certs/server.crt
+      - SYSLOG_SERVER_KEY_FILE=/certs/server.key
+      - SYSLOG_CLIENT_CA_FILE=/certs/client-ca.crt
+      - SYSLOG_MAX_FRAME_BYTES=65536
+      - SYSLOG_MAX_CONNECTIONS=1000
+      - SYSLOG_CONN_IDLE_TIMEOUT=300s
+      - SYSLOG_COLLECTOR_ADDR=127.0.0.1:5140
     volumes:
       - proxy-data:/data
+      - ./certs:/certs:ro
     restart: unless-stopped
 
 volumes:

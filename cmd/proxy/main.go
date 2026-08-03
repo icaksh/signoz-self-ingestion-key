@@ -10,10 +10,12 @@ import (
 	"time"
 
 	"github.com/sismedika/otlp-proxy/internal/admin"
+	"github.com/sismedika/otlp-proxy/internal/auth"
 	"github.com/sismedika/otlp-proxy/internal/config"
 	"github.com/sismedika/otlp-proxy/internal/proxy"
 	"github.com/sismedika/otlp-proxy/internal/ratelimit"
 	"github.com/sismedika/otlp-proxy/internal/store"
+	"github.com/sismedika/otlp-proxy/internal/syslog"
 )
 
 func main() {
@@ -32,7 +34,9 @@ func main() {
 	lim.Start()
 	defer lim.Stop()
 
-	proxyHandler, err := proxy.NewHandler(cfg.SigNozEndpoint, cfg.SigNozIngestKey, st, cfg.MaxBodyBytes, lim)
+	gateway := auth.NewGateway(st)
+
+	proxyHandler, err := proxy.NewHandler(cfg.SigNozEndpoint, cfg.SigNozIngestKey, st, cfg.MaxBodyBytes, lim, gateway)
 	if err != nil {
 		log.Fatalf("proxy: %v", err)
 	}
@@ -53,6 +57,30 @@ func main() {
 	adminServer.WriteTimeout = 30 * time.Second
 	adminServer.IdleTimeout = 120 * time.Second
 	adminServer.MaxHeaderBytes = 1 << 16
+
+	// Syslog-over-TLS (mTLS) — optional
+	syslogCtx, syslogCancel := context.WithCancel(context.Background())
+	defer syslogCancel()
+	if cfg.SyslogEnabled {
+		syslogSrv, err := syslog.NewServer(syslog.Config{
+			Addr:            cfg.SyslogListenAddr,
+			ServerCertFile:  cfg.SyslogServerCertFile,
+			ServerKeyFile:   cfg.SyslogServerKeyFile,
+			ClientCAFile:    cfg.SyslogClientCAFile,
+			MaxFrameBytes:   cfg.SyslogMaxFrameBytes,
+			MaxConnections:  cfg.SyslogMaxConnections,
+			ConnIdleTimeout: cfg.SyslogConnIdleTimeout,
+			CollectorAddr:   cfg.SyslogCollectorAddr,
+		}, st, gateway, lim)
+		if err != nil {
+			log.Fatalf("syslog: %v", err)
+		}
+		go func() {
+			if err := syslogSrv.ListenAndServe(syslogCtx); err != nil {
+				log.Printf("[syslog] %v", err)
+			}
+		}()
+	}
 
 	// Run cleanup at startup, then every 24h
 	if err := st.CleanupOldLogs(context.Background(), cfg.UsageRetentionDays); err != nil {
@@ -91,6 +119,8 @@ func main() {
 	<-quit
 
 	log.Println("shutting down...")
+
+	syslogCancel() // stop accepting syslog connections
 
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()

@@ -365,6 +365,22 @@ func migrate(db *sql.DB) error {
 	CREATE INDEX IF NOT EXISTS idx_usage_tenant_time ON usage_logs(tenant_id, created_at);
 	CREATE INDEX IF NOT EXISTS idx_usage_created ON usage_logs(created_at);
 
+	CREATE TABLE IF NOT EXISTS certificates (
+	    id                 INTEGER PRIMARY KEY AUTOINCREMENT,
+	    tenant_id          INTEGER NOT NULL REFERENCES tenants(id) ON DELETE CASCADE,
+	    serial_number      TEXT    NOT NULL,
+	    fingerprint_sha256 TEXT    NOT NULL UNIQUE,
+	    subject_cn         TEXT    NOT NULL,
+	    not_before         DATETIME,
+	    not_after          DATETIME,
+	    revoked_at         DATETIME,
+	    created_at         DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+	    last_seen_at       DATETIME
+	);
+
+	CREATE INDEX IF NOT EXISTS idx_certificates_fingerprint ON certificates(fingerprint_sha256);
+	CREATE INDEX IF NOT EXISTS idx_certificates_tenant ON certificates(tenant_id);
+
 	CREATE TABLE IF NOT EXISTS usage_counters (
 	    tenant_id   INTEGER NOT NULL REFERENCES tenants(id) ON DELETE CASCADE,
 	    signal_type TEXT    NOT NULL,
@@ -958,7 +974,6 @@ func (s *Store) getUsageSignalTypes(ctx context.Context, tenantID int64, since s
 }
 
 // --- user auth ---
-
 func (s *Store) GetUserByUsername(ctx context.Context, username string) (id int64, passwordHash string, err error) {
 	err = s.db.QueryRowContext(ctx,
 		`SELECT id, password FROM users WHERE username = ?`, username,
@@ -1010,4 +1025,132 @@ func (s *Store) CleanupOldLogs(ctx context.Context, retentionDays int) error {
 		`DELETE FROM usage_logs WHERE created_at < datetime('now', ? || ' days')`,
 		fmt.Sprintf("-%d", retentionDays))
 	return err
+}
+
+// --- certificates ---
+
+type Certificate struct {
+	ID                int64
+	TenantID          int64
+	SerialNumber      string
+	FingerprintSHA256 string
+	SubjectCN         string
+	NotBefore         time.Time
+	NotAfter          time.Time
+	RevokedAt         sql.NullTime
+	CreatedAt         time.Time
+	LastSeenAt        sql.NullTime
+}
+
+const certColumns = `id, tenant_id, serial_number, fingerprint_sha256, subject_cn,
+       not_before, not_after, revoked_at, created_at, last_seen_at`
+
+func scanCertificate(scanner interface{ Scan(...any) error }) (*Certificate, error) {
+	c := &Certificate{}
+	var notBefore, notAfter, revokedAt, lastSeenAt sql.NullTime
+	if err := scanner.Scan(&c.ID, &c.TenantID, &c.SerialNumber, &c.FingerprintSHA256, &c.SubjectCN,
+		&notBefore, &notAfter, &revokedAt, &c.CreatedAt, &lastSeenAt); err != nil {
+		return nil, err
+	}
+	if notBefore.Valid {
+		c.NotBefore = notBefore.Time
+	}
+	if notAfter.Valid {
+		c.NotAfter = notAfter.Time
+	}
+	if revokedAt.Valid {
+		c.RevokedAt = revokedAt
+	}
+	if lastSeenAt.Valid {
+		c.LastSeenAt = lastSeenAt
+	}
+	return c, nil
+}
+
+// LookupTenantByFingerprint resolves the active tenant for a client-cert
+// fingerprint. Returns (nil, nil) when the cert is unknown, revoked, or the
+// tenant is inactive.
+func (s *Store) LookupTenantByFingerprint(ctx context.Context, fingerprint string) (*Tenant, error) {
+	t, err := scanTenant(s.db.QueryRowContext(ctx,
+		`SELECT t.id, t.name, COALESCE(t.api_key, ''), t.active, t.description,
+		        t.rate_limit_rps, t.burst_bytes, t.daily_byte_quota, t.created_at, t.updated_at,
+		        COALESCE((SELECT ak.key_prefix FROM api_keys ak
+		                  WHERE ak.tenant_id = t.id AND ak.enabled = 1 AND ak.revoked_at IS NULL
+		                  ORDER BY ak.created_at DESC LIMIT 1), '') AS key_prefix
+		 FROM tenants t
+		 JOIN certificates c ON c.tenant_id = t.id
+		 WHERE c.fingerprint_sha256 = ? AND c.revoked_at IS NULL AND t.active = 1`,
+		fingerprint))
+	if err == sql.ErrNoRows {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	return t, nil
+}
+
+func (s *Store) LookupCertificateByFingerprint(ctx context.Context, fingerprint string) (*Certificate, error) {
+	c, err := scanCertificate(s.db.QueryRowContext(ctx,
+		`SELECT `+certColumns+` FROM certificates WHERE fingerprint_sha256 = ?`, fingerprint))
+	if err == sql.ErrNoRows {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	return c, nil
+}
+
+func (s *Store) UpdateLastSeen(ctx context.Context, fingerprint string) error {
+	_, err := s.db.ExecContext(ctx,
+		`UPDATE certificates SET last_seen_at = CURRENT_TIMESTAMP WHERE fingerprint_sha256 = ?`,
+		fingerprint)
+	return err
+}
+
+func (s *Store) AddCertificate(ctx context.Context, tenantID int64, serial, fingerprint, cn string, notBefore, notAfter time.Time) (*Certificate, error) {
+	res, err := s.db.ExecContext(ctx,
+		`INSERT INTO certificates (tenant_id, serial_number, fingerprint_sha256, subject_cn, not_before, not_after)
+		 VALUES (?, ?, ?, ?, ?, ?)`,
+		tenantID, serial, fingerprint, cn, notBefore, notAfter)
+	if err != nil {
+		return nil, err
+	}
+	id, _ := res.LastInsertId()
+	return &Certificate{
+		ID:                id,
+		TenantID:          tenantID,
+		SerialNumber:      serial,
+		FingerprintSHA256: fingerprint,
+		SubjectCN:         cn,
+		NotBefore:         notBefore,
+		NotAfter:          notAfter,
+		CreatedAt:         time.Now(),
+	}, nil
+}
+
+func (s *Store) RevokeCertificate(ctx context.Context, fingerprint string) error {
+	_, err := s.db.ExecContext(ctx,
+		`UPDATE certificates SET revoked_at = CURRENT_TIMESTAMP WHERE fingerprint_sha256 = ?`,
+		fingerprint)
+	return err
+}
+
+func (s *Store) ListCertificates(ctx context.Context, tenantID int64) ([]Certificate, error) {
+	rows, err := s.db.QueryContext(ctx,
+		`SELECT `+certColumns+` FROM certificates WHERE tenant_id = ? ORDER BY created_at DESC`, tenantID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var certs []Certificate
+	for rows.Next() {
+		c, err := scanCertificate(rows)
+		if err != nil {
+			return nil, err
+		}
+		certs = append(certs, *c)
+	}
+	return certs, rows.Err()
 }

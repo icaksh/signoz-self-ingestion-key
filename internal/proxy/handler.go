@@ -13,6 +13,7 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/sismedika/otlp-proxy/internal/auth"
 	"github.com/sismedika/otlp-proxy/internal/ratelimit"
 	"github.com/sismedika/otlp-proxy/internal/store"
 )
@@ -20,6 +21,7 @@ import (
 type Handler struct {
 	proxy        *httputil.ReverseProxy
 	store        *store.Store
+	gateway      *auth.Gateway
 	limiter      *ratelimit.Limiter
 	maxBodyBytes int64
 }
@@ -31,7 +33,7 @@ type statusRecorder struct {
 
 type ctxKeyStatus struct{}
 
-func NewHandler(signozEndpoint, signozIngestKey string, st *store.Store, maxBodyBytes int64, lim *ratelimit.Limiter) (*Handler, error) {
+func NewHandler(signozEndpoint, signozIngestKey string, st *store.Store, maxBodyBytes int64, lim *ratelimit.Limiter, gw *auth.Gateway) (*Handler, error) {
 	target, err := url.Parse(signozEndpoint)
 	if err != nil {
 		return nil, err
@@ -39,6 +41,7 @@ func NewHandler(signozEndpoint, signozIngestKey string, st *store.Store, maxBody
 
 	h := &Handler{
 		store:        st,
+		gateway:      gw,
 		limiter:      lim,
 		maxBodyBytes: maxBodyBytes,
 	}
@@ -122,7 +125,7 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	tenant, err := h.store.LookupTenantByKey(r.Context(), tenantKey)
+	tenant, err := h.gateway.ResolveTenant(r.Context(), auth.NewAPIKeyCredential(tenantKey))
 	if err != nil {
 		log.Printf("[proxy] tenant lookup error: %v", err)
 		http.Error(w, `{"error":"internal error"}`, http.StatusInternalServerError)

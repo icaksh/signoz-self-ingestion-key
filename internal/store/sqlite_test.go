@@ -8,6 +8,7 @@ import (
 	"strings"
 	"sync/atomic"
 	"testing"
+	"time"
 )
 
 func testDB(t *testing.T) *Store {
@@ -647,5 +648,122 @@ func TestGetDailyByteUsage(t *testing.T) {
 	}
 	if used != 300 {
 		t.Fatalf("expected 300 bytes today, got %d", used)
+	}
+}
+
+func TestAddAndLookupCertificate(t *testing.T) {
+	ctx := context.Background()
+	s := testDB(t)
+	tenant, _ := s.CreateTenant(ctx, "cert-app", "", nil)
+
+	fp := "abcdef1234567890abcdef"
+	_, err := s.AddCertificate(ctx, tenant.ID, "12345", fp, "client-1", time.Now(), time.Now().Add(24*time.Hour))
+	if err != nil {
+		t.Fatalf("add cert: %v", err)
+	}
+
+	// Lookup by fingerprint → tenant
+	found, err := s.LookupTenantByFingerprint(ctx, fp)
+	if err != nil {
+		t.Fatalf("lookup: %v", err)
+	}
+	if found == nil || found.ID != tenant.ID {
+		t.Fatalf("expected tenant %d, got %+v", tenant.ID, found)
+	}
+
+	// Unknown fingerprint → nil
+	unknown, _ := s.LookupTenantByFingerprint(ctx, "ffffffffffffffffffffffff")
+	if unknown != nil {
+		t.Fatal("expected nil for unknown fingerprint")
+	}
+}
+
+func TestRevokedCertificate(t *testing.T) {
+	ctx := context.Background()
+	s := testDB(t)
+	tenant, _ := s.CreateTenant(ctx, "revoked-app", "", nil)
+
+	fp := "feedbeef1234567890abcd"
+	s.AddCertificate(ctx, tenant.ID, "99", fp, "client-1", time.Now(), time.Now().Add(24*time.Hour))
+	if err := s.RevokeCertificate(ctx, fp); err != nil {
+		t.Fatalf("revoke: %v", err)
+	}
+
+	found, _ := s.LookupTenantByFingerprint(ctx, fp)
+	if found != nil {
+		t.Fatal("expected nil for revoked cert")
+	}
+}
+
+func TestInactiveTenantWithCert(t *testing.T) {
+	ctx := context.Background()
+	s := testDB(t)
+	tenant, _ := s.CreateTenant(ctx, "inactive-app", "", nil)
+
+	fp := "inactive0000000000000000"
+	s.AddCertificate(ctx, tenant.ID, "1", fp, "client-1", time.Now(), time.Now().Add(24*time.Hour))
+	if err := s.UpdateTenant(ctx, tenant.ID, "inactive-app", "", false, nil); err != nil {
+		t.Fatalf("deactivate: %v", err)
+	}
+
+	found, _ := s.LookupTenantByFingerprint(ctx, fp)
+	if found != nil {
+		t.Fatal("expected nil for inactive tenant cert")
+	}
+}
+
+func TestCertificateLastSeen(t *testing.T) {
+	ctx := context.Background()
+	s := testDB(t)
+	tenant, _ := s.CreateTenant(ctx, "seen-app", "", nil)
+
+	fp := "seen00000000000000000000"
+	s.AddCertificate(ctx, tenant.ID, "2", fp, "client-1", time.Now(), time.Now().Add(24*time.Hour))
+
+	if err := s.UpdateLastSeen(ctx, fp); err != nil {
+		t.Fatalf("update last seen: %v", err)
+	}
+
+	cert, err := s.LookupCertificateByFingerprint(ctx, fp)
+	if err != nil {
+		t.Fatalf("lookup cert: %v", err)
+	}
+	if cert == nil || !cert.LastSeenAt.Valid {
+		t.Fatal("expected last_seen_at to be set")
+	}
+}
+
+func TestDeleteCertificateByTenantCascade(t *testing.T) {
+	ctx := context.Background()
+	s := testDB(t)
+	tenant, _ := s.CreateTenant(ctx, "cascade-cert", "", nil)
+
+	fp := "cascade00000000000000000"
+	s.AddCertificate(ctx, tenant.ID, "3", fp, "client-1", time.Now(), time.Now().Add(24*time.Hour))
+
+	if err := s.DeleteTenant(ctx, tenant.ID); err != nil {
+		t.Fatalf("delete tenant: %v", err)
+	}
+
+	cert, _ := s.LookupCertificateByFingerprint(ctx, fp)
+	if cert != nil {
+		t.Fatal("expected cert row deleted via cascade")
+	}
+}
+
+func TestListCertificates(t *testing.T) {
+	ctx := context.Background()
+	s := testDB(t)
+	tenant, _ := s.CreateTenant(ctx, "list-cert", "", nil)
+
+	s.AddCertificate(ctx, tenant.ID, "1", "aaa00000000000000000000", "c1", time.Now(), time.Now().Add(24*time.Hour))
+	s.AddCertificate(ctx, tenant.ID, "2", "bbb00000000000000000000", "c2", time.Now(), time.Now().Add(24*time.Hour))
+
+	certs, err := s.ListCertificates(ctx, tenant.ID)
+	if err != nil {
+		t.Fatalf("list: %v", err)
+	}
+	if len(certs) != 2 {
+		t.Fatalf("expected 2 certs, got %d", len(certs))
 	}
 }

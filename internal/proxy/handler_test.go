@@ -19,6 +19,7 @@ import (
 	resourcev1 "go.opentelemetry.io/proto/otlp/resource/v1"
 	tracev1 "go.opentelemetry.io/proto/otlp/trace/v1"
 
+	"github.com/sismedika/otlp-proxy/internal/auth"
 	"github.com/sismedika/otlp-proxy/internal/ratelimit"
 	"github.com/sismedika/otlp-proxy/internal/store"
 )
@@ -44,7 +45,7 @@ func TestProxyMissingTenantKey(t *testing.T) {
 
 	st := testStore(t)
 
-	handler, err := NewHandler(backend.URL, "test-ingest-key", st, 4194304, ratelimit.NewLimiter(st))
+	handler, err := NewHandler(backend.URL, "test-ingest-key", st, 4194304, ratelimit.NewLimiter(st), auth.NewGateway(st))
 	if err != nil {
 		t.Fatalf("new handler: %v", err)
 	}
@@ -66,7 +67,7 @@ func TestProxyInvalidTenantKey(t *testing.T) {
 
 	st := testStore(t)
 
-	handler, err := NewHandler(backend.URL, "test-ingest-key", st, 4194304, ratelimit.NewLimiter(st))
+	handler, err := NewHandler(backend.URL, "test-ingest-key", st, 4194304, ratelimit.NewLimiter(st), auth.NewGateway(st))
 	if err != nil {
 		t.Fatalf("new handler: %v", err)
 	}
@@ -94,7 +95,7 @@ func TestProxyValidTenantForward(t *testing.T) {
 	st := testStore(t)
 	tenant, _ := st.CreateTenant(t.Context(), "test-app", "", nil)
 
-	handler, err := NewHandler(backend.URL, "test-ingest-key", st, 4194304, ratelimit.NewLimiter(st))
+	handler, err := NewHandler(backend.URL, "test-ingest-key", st, 4194304, ratelimit.NewLimiter(st), auth.NewGateway(st))
 	if err != nil {
 		t.Fatalf("new handler: %v", err)
 	}
@@ -133,7 +134,7 @@ func TestProxyUnknownPath(t *testing.T) {
 
 	st := testStore(t)
 
-	handler, err := NewHandler(backend.URL, "test-ingest-key", st, 4194304, ratelimit.NewLimiter(st))
+	handler, err := NewHandler(backend.URL, "test-ingest-key", st, 4194304, ratelimit.NewLimiter(st), auth.NewGateway(st))
 	if err != nil {
 		t.Fatalf("new handler: %v", err)
 	}
@@ -159,7 +160,7 @@ func TestProxyValidForwardOptionalAuth(t *testing.T) {
 	st := testStore(t)
 	tenant, _ := st.CreateTenant(t.Context(), "no-auth-app", "", nil)
 
-	handler, err := NewHandler(backend.URL, "", st, 4194304, ratelimit.NewLimiter(st))
+	handler, err := NewHandler(backend.URL, "", st, 4194304, ratelimit.NewLimiter(st), auth.NewGateway(st))
 	if err != nil {
 		t.Fatalf("new handler: %v", err)
 	}
@@ -188,7 +189,7 @@ func TestProxyValidForwardOptionalAuth(t *testing.T) {
 
 func TestNewHandlerInvalidURL(t *testing.T) {
 	st := testStore(t)
-	_, err := NewHandler("://invalid", "key", st, 4194304, ratelimit.NewLimiter(st))
+	_, err := NewHandler("://invalid", "key", st, 4194304, ratelimit.NewLimiter(st), auth.NewGateway(st))
 	if err == nil {
 		t.Fatal("expected error for invalid URL")
 	}
@@ -211,7 +212,7 @@ func TestMaxBodyExceeded(t *testing.T) {
 	st := testStore(t)
 	tenant, _ := st.CreateTenant(t.Context(), "max-body-test", "", nil)
 
-	handler, err := NewHandler(backend.URL, "test-key", st, 100, ratelimit.NewLimiter(st))
+	handler, err := NewHandler(backend.URL, "test-key", st, 100, ratelimit.NewLimiter(st), auth.NewGateway(st))
 	if err != nil {
 		t.Fatalf("new handler: %v", err)
 	}
@@ -237,7 +238,7 @@ func TestMaxBodyUnder(t *testing.T) {
 	st := testStore(t)
 	tenant, _ := st.CreateTenant(t.Context(), "max-body-ok", "", nil)
 
-	handler, err := NewHandler(backend.URL, "test-key", st, 100, ratelimit.NewLimiter(st))
+	handler, err := NewHandler(backend.URL, "test-key", st, 100, ratelimit.NewLimiter(st), auth.NewGateway(st))
 	if err != nil {
 		t.Fatalf("new handler: %v", err)
 	}
@@ -262,7 +263,7 @@ func TestProxyNearPathRejected(t *testing.T) {
 	defer backend.Close()
 
 	st := testStore(t)
-	handler, err := NewHandler(backend.URL, "test-key", st, 4194304, ratelimit.NewLimiter(st))
+	handler, err := NewHandler(backend.URL, "test-key", st, 4194304, ratelimit.NewLimiter(st), auth.NewGateway(st))
 	if err != nil {
 		t.Fatalf("new handler: %v", err)
 	}
@@ -289,7 +290,7 @@ func TestProxyStripsTenantKeyHeader(t *testing.T) {
 	st := testStore(t)
 	tenant, _ := st.CreateTenant(t.Context(), "strip-test", "", nil)
 
-	handler, err := NewHandler(backend.URL, "test-ingest-key", st, 4194304, ratelimit.NewLimiter(st))
+	handler, err := NewHandler(backend.URL, "test-ingest-key", st, 4194304, ratelimit.NewLimiter(st), auth.NewGateway(st))
 	if err != nil {
 		t.Fatalf("new handler: %v", err)
 	}
@@ -309,7 +310,7 @@ func TestProxyStripsTenantKeyHeader(t *testing.T) {
 
 func TestProxyHealthz(t *testing.T) {
 	st := testStore(t)
-	handler, err := NewHandler("http://localhost:1", "key", st, 4194304, ratelimit.NewLimiter(st))
+	handler, err := NewHandler("http://localhost:1", "key", st, 4194304, ratelimit.NewLimiter(st), auth.NewGateway(st))
 	if err != nil {
 		t.Fatalf("new handler: %v", err)
 	}
@@ -331,7 +332,7 @@ func TestProxyHealthzDBDown(t *testing.T) {
 	// Close the DB to simulate failure
 	st.Close()
 
-	handler, err := NewHandler("http://localhost:1", "key", st, 4194304, ratelimit.NewLimiter(st))
+	handler, err := NewHandler("http://localhost:1", "key", st, 4194304, ratelimit.NewLimiter(st), auth.NewGateway(st))
 	if err != nil {
 		t.Fatalf("new handler: %v", err)
 	}
@@ -354,7 +355,7 @@ func TestProxyUpstream503(t *testing.T) {
 	st := testStore(t)
 	tenant, _ := st.CreateTenant(t.Context(), "upstream-503", "", nil)
 
-	handler, err := NewHandler(backend.URL, "test-key", st, 4194304, ratelimit.NewLimiter(st))
+	handler, err := NewHandler(backend.URL, "test-key", st, 4194304, ratelimit.NewLimiter(st), auth.NewGateway(st))
 	if err != nil {
 		t.Fatalf("new handler: %v", err)
 	}
@@ -391,7 +392,7 @@ func TestProxyChunkedBodyCounting(t *testing.T) {
 	st := testStore(t)
 	tenant, _ := st.CreateTenant(t.Context(), "chunked-test", "", nil)
 
-	handler, err := NewHandler(backend.URL, "test-key", st, 4194304, ratelimit.NewLimiter(st))
+	handler, err := NewHandler(backend.URL, "test-key", st, 4194304, ratelimit.NewLimiter(st), auth.NewGateway(st))
 	if err != nil {
 		t.Fatalf("new handler: %v", err)
 	}
@@ -430,7 +431,7 @@ func TestProxySpoofedContentLength(t *testing.T) {
 	st := testStore(t)
 	tenant, _ := st.CreateTenant(t.Context(), "spoof-test", "", nil)
 
-	handler, err := NewHandler(backend.URL, "test-key", st, 4194304, ratelimit.NewLimiter(st))
+	handler, err := NewHandler(backend.URL, "test-key", st, 4194304, ratelimit.NewLimiter(st), auth.NewGateway(st))
 	if err != nil {
 		t.Fatalf("new handler: %v", err)
 	}
@@ -459,7 +460,7 @@ func TestProxySpoofedContentLength(t *testing.T) {
 
 func TestProxyHealthzDroppedCounter(t *testing.T) {
 	st := testStore(t)
-	handler, err := NewHandler("http://localhost:1", "key", st, 4194304, ratelimit.NewLimiter(st))
+	handler, err := NewHandler("http://localhost:1", "key", st, 4194304, ratelimit.NewLimiter(st), auth.NewGateway(st))
 	if err != nil {
 		t.Fatalf("new handler: %v", err)
 	}
@@ -490,7 +491,7 @@ func TestProxyRateLimit429(t *testing.T) {
 	lim.Start()
 	defer lim.Stop()
 
-	handler, err := NewHandler(backend.URL, "", st, 4194304, lim)
+	handler, err := NewHandler(backend.URL, "", st, 4194304, lim, auth.NewGateway(st))
 	if err != nil {
 		t.Fatalf("new handler: %v", err)
 	}
@@ -543,7 +544,7 @@ func TestProxyNoRateLimit(t *testing.T) {
 	lim.Start()
 	defer lim.Stop()
 
-	handler, err := NewHandler(backend.URL, "", st, 4194304, lim)
+	handler, err := NewHandler(backend.URL, "", st, 4194304, lim, auth.NewGateway(st))
 	if err != nil {
 		t.Fatalf("new handler: %v", err)
 	}
@@ -571,7 +572,7 @@ func TestProxyStripClientTenantID(t *testing.T) {
 	st := testStore(t)
 	tenant, _ := st.CreateTenant(t.Context(), "strip-test", "", nil)
 
-	handler, err := NewHandler(backend.URL, "test-key", st, 4194304, ratelimit.NewLimiter(st))
+	handler, err := NewHandler(backend.URL, "test-key", st, 4194304, ratelimit.NewLimiter(st), auth.NewGateway(st))
 	if err != nil {
 		t.Fatalf("new handler: %v", err)
 	}
@@ -628,7 +629,7 @@ func TestProxyMalformedProto400(t *testing.T) {
 	st := testStore(t)
 	tenant, _ := st.CreateTenant(t.Context(), "malformed-test", "", nil)
 
-	handler, err := NewHandler(backend.URL, "test-key", st, 4194304, ratelimit.NewLimiter(st))
+	handler, err := NewHandler(backend.URL, "test-key", st, 4194304, ratelimit.NewLimiter(st), auth.NewGateway(st))
 	if err != nil {
 		t.Fatalf("new handler: %v", err)
 	}
@@ -658,7 +659,7 @@ func TestProxyGzipRoundTrip(t *testing.T) {
 	st := testStore(t)
 	tenant, _ := st.CreateTenant(t.Context(), "gzip-test", "", nil)
 
-	handler, err := NewHandler(backend.URL, "test-key", st, 4194304, ratelimit.NewLimiter(st))
+	handler, err := NewHandler(backend.URL, "test-key", st, 4194304, ratelimit.NewLimiter(st), auth.NewGateway(st))
 	if err != nil {
 		t.Fatalf("new handler: %v", err)
 	}
@@ -719,7 +720,7 @@ func TestProxyOriginalByteAccounting(t *testing.T) {
 	st := testStore(t)
 	tenant, _ := st.CreateTenant(t.Context(), "byte-accounting", "", nil)
 
-	handler, err := NewHandler(backend.URL, "test-key", st, 4194304, ratelimit.NewLimiter(st))
+	handler, err := NewHandler(backend.URL, "test-key", st, 4194304, ratelimit.NewLimiter(st), auth.NewGateway(st))
 	if err != nil {
 		t.Fatalf("new handler: %v", err)
 	}
@@ -763,7 +764,7 @@ func TestProxyJSONContentType(t *testing.T) {
 	st := testStore(t)
 	tenant, _ := st.CreateTenant(t.Context(), "json-test", "", nil)
 
-	handler, err := NewHandler(backend.URL, "test-key", st, 4194304, ratelimit.NewLimiter(st))
+	handler, err := NewHandler(backend.URL, "test-key", st, 4194304, ratelimit.NewLimiter(st), auth.NewGateway(st))
 	if err != nil {
 		t.Fatalf("new handler: %v", err)
 	}
@@ -788,7 +789,7 @@ func TestProxyContentTypeWithCharset(t *testing.T) {
 	st := testStore(t)
 	tenant, _ := st.CreateTenant(t.Context(), "charset-test", "", nil)
 
-	handler, err := NewHandler(backend.URL, "test-key", st, 4194304, ratelimit.NewLimiter(st))
+	handler, err := NewHandler(backend.URL, "test-key", st, 4194304, ratelimit.NewLimiter(st), auth.NewGateway(st))
 	if err != nil {
 		t.Fatalf("new handler: %v", err)
 	}
