@@ -99,6 +99,15 @@ func TestProxyValidTenantForward(t *testing.T) {
 	if receivedPath != "/v1/traces" {
 		t.Fatalf("expected path /v1/traces, got %q", receivedPath)
 	}
+
+	st.FlushCounters()
+	requests, _, _, err := st.CounterTotals(t.Context(), tenant.ID)
+	if err != nil {
+		t.Fatalf("counter totals: %v", err)
+	}
+	if requests != 1 {
+		t.Fatalf("expected 1 request recorded, got %d", requests)
+	}
 }
 
 func TestProxyUnknownPath(t *testing.T) {
@@ -150,6 +159,15 @@ func TestProxyValidForwardOptionalAuth(t *testing.T) {
 	}
 	if receivedAuth != "" {
 		t.Fatalf("expected no auth header with empty key, got %q", receivedAuth)
+	}
+
+	st.FlushCounters()
+	requests, _, _, err := st.CounterTotals(t.Context(), tenant.ID)
+	if err != nil {
+		t.Fatalf("counter totals: %v", err)
+	}
+	if requests != 1 {
+		t.Fatalf("expected 1 request recorded, got %d", requests)
 	}
 }
 
@@ -309,5 +327,133 @@ func TestProxyHealthzDBDown(t *testing.T) {
 
 	if rec.Code != http.StatusServiceUnavailable {
 		t.Fatalf("expected 503, got %d", rec.Code)
+	}
+}
+
+func TestProxyUpstream503(t *testing.T) {
+	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusServiceUnavailable)
+	}))
+	defer backend.Close()
+
+	st := testStore(t)
+	tenant, _ := st.CreateTenant(t.Context(), "upstream-503", "")
+
+	handler, err := NewHandler(backend.URL, "test-key", st, 4194304)
+	if err != nil {
+		t.Fatalf("new handler: %v", err)
+	}
+
+	req := httptest.NewRequest("POST", "/v1/traces", strings.NewReader("test body"))
+	req.Header.Set("X-Tenant-Key", tenant.APIKey)
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusServiceUnavailable {
+		t.Fatalf("expected 503, got %d", rec.Code)
+	}
+
+	st.FlushCounters()
+	requests, _, errors, err := st.CounterTotals(t.Context(), tenant.ID)
+	if err != nil {
+		t.Fatalf("counter totals: %v", err)
+	}
+	if requests != 1 {
+		t.Fatalf("expected 1 request recorded, got %d", requests)
+	}
+	if errors != 1 {
+		t.Fatalf("expected 1 error recorded, got %d", errors)
+	}
+}
+
+func TestProxyChunkedBodyCounting(t *testing.T) {
+	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer backend.Close()
+
+	st := testStore(t)
+	tenant, _ := st.CreateTenant(t.Context(), "chunked-test", "")
+
+	handler, err := NewHandler(backend.URL, "test-key", st, 4194304)
+	if err != nil {
+		t.Fatalf("new handler: %v", err)
+	}
+
+	bodyContent := "chunked body with some actual data"
+	req := httptest.NewRequest("POST", "/v1/traces", strings.NewReader(bodyContent))
+	req.Header.Set("X-Tenant-Key", tenant.APIKey)
+	req.ContentLength = -1 // no Content-Length → chunked
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d", rec.Code)
+	}
+
+	st.FlushCounters()
+	requests, bytes, _, err := st.CounterTotals(t.Context(), tenant.ID)
+	if err != nil {
+		t.Fatalf("counter totals: %v", err)
+	}
+	if requests != 1 {
+		t.Fatalf("expected 1 request, got %d", requests)
+	}
+	if bytes != int64(len(bodyContent)) {
+		t.Fatalf("expected %d bytes accounted, got %d", len(bodyContent), bytes)
+	}
+}
+
+func TestProxySpoofedContentLength(t *testing.T) {
+	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer backend.Close()
+
+	st := testStore(t)
+	tenant, _ := st.CreateTenant(t.Context(), "spoof-test", "")
+
+	handler, err := NewHandler(backend.URL, "test-key", st, 4194304)
+	if err != nil {
+		t.Fatalf("new handler: %v", err)
+	}
+
+	realBody := "10-bytes!!"
+	req := httptest.NewRequest("POST", "/v1/traces", strings.NewReader(realBody))
+	req.Header.Set("X-Tenant-Key", tenant.APIKey)
+	req.Header.Set("Content-Length", "999999") // spoofed!
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d", rec.Code)
+	}
+
+	st.FlushCounters()
+	_, bytes, _, err := st.CounterTotals(t.Context(), tenant.ID)
+	if err != nil {
+		t.Fatalf("counter totals: %v", err)
+	}
+	if bytes != 10 {
+		t.Fatalf("expected 10 bytes accounted, got %d (spoofed Content-Length was 999999)", bytes)
+	}
+}
+
+func TestProxyHealthzDroppedCounter(t *testing.T) {
+	st := testStore(t)
+	handler, err := NewHandler("http://localhost:1", "key", st, 4194304)
+	if err != nil {
+		t.Fatalf("new handler: %v", err)
+	}
+
+	req := httptest.NewRequest("GET", "/healthz", nil)
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d", rec.Code)
+	}
+	if !strings.Contains(rec.Body.String(), `"dropped":0`) {
+		t.Fatalf("expected dropped counter in healthz, got %q", rec.Body.String())
 	}
 }

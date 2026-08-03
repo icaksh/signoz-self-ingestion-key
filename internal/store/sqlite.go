@@ -11,6 +11,8 @@ import (
 	"log"
 	"strconv"
 	"strings"
+	"sync"
+	"sync/atomic"
 	"time"
 
 	_ "modernc.org/sqlite"
@@ -49,7 +51,8 @@ type SignalBucket struct {
 }
 
 type Store struct {
-	db *sql.DB
+	db     *sql.DB
+	writer *UsageWriter
 }
 
 func Open(path string) (*Store, error) {
@@ -72,15 +75,251 @@ func Open(path string) (*Store, error) {
 	_ = db.QueryRow("PRAGMA foreign_keys").Scan(&foreignKeys)
 	log.Printf("[store] sqlite pragmas: journal_mode=%s foreign_keys=%s", journalMode, foreignKeys)
 
-	return &Store{db: db}, nil
+	writer := NewUsageWriter(db)
+	writer.Start()
+
+	return &Store{db: db, writer: writer}, nil
 }
 
 func (s *Store) Close() error {
+	if s.writer != nil {
+		s.writer.Stop()
+	}
 	return s.db.Close()
 }
 
 func (s *Store) Ping(ctx context.Context) error {
 	return s.db.PingContext(ctx)
+}
+
+// counterKey is the composite key for hourly usage aggregation.
+type counterKey struct {
+	tenantID   int64
+	signalType string
+	hourBucket string
+}
+
+// counterSample is a single usage event sent through the channel.
+type counterSample struct {
+	tenantID   int64
+	signalType string
+	hourBucket string
+	requests   int64
+	bytes      int64
+	isError    bool
+}
+
+// counterAccum holds in-memory aggregates before flush.
+type counterAccum struct {
+	requests int64
+	bytes    int64
+	errors   int64
+}
+
+// UsageWriter aggregates per-request usage samples and flushes them to
+// usage_counters every 10s or on shutdown. The channel is bounded so a slow
+// DB can never unboundedly grow memory — excess samples are dropped and
+// counted in DroppedSamples. All channel reads happen on the single writer
+// goroutine; flushNow coordinates a synchronous flush through it so a
+// concurrent flush can never race an in-flight sample handoff.
+type UsageWriter struct {
+	db       *sql.DB
+	ch       chan counterSample
+	flushReq chan chan struct{}
+	mu       sync.Mutex
+	accum    map[counterKey]*counterAccum
+	dropped  int64
+	done     chan struct{}
+	flushed  chan struct{}
+	stopOnce sync.Once
+}
+
+func NewUsageWriter(db *sql.DB) *UsageWriter {
+	return &UsageWriter{
+		db:       db,
+		ch:       make(chan counterSample, 4096),
+		flushReq: make(chan chan struct{}),
+		accum:    make(map[counterKey]*counterAccum),
+	}
+}
+
+func (w *UsageWriter) Start() {
+	w.done = make(chan struct{})
+	w.flushed = make(chan struct{})
+	go func() {
+		defer close(w.flushed)
+		ticker := time.NewTicker(10 * time.Second)
+		defer ticker.Stop()
+		for {
+			select {
+			case s := <-w.ch:
+				w.accumulate(s)
+			case done := <-w.flushReq:
+				w.drain()
+				w.flush()
+				close(done)
+			case <-ticker.C:
+				w.flush()
+			case <-w.done:
+				w.drain()
+				w.flush()
+				return
+			}
+		}
+	}()
+}
+
+func (w *UsageWriter) Stop() {
+	w.stopOnce.Do(func() {
+		close(w.done)
+		<-w.flushed
+	})
+}
+
+func (w *UsageWriter) accumulate(s counterSample) {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	key := counterKey{tenantID: s.tenantID, signalType: s.signalType, hourBucket: s.hourBucket}
+	acc, ok := w.accum[key]
+	if !ok {
+		acc = &counterAccum{}
+		w.accum[key] = acc
+	}
+	acc.requests += s.requests
+	acc.bytes += s.bytes
+	if s.isError {
+		acc.errors++
+	}
+}
+
+func (w *UsageWriter) drain() {
+	for {
+		select {
+		case s := <-w.ch:
+			w.accumulate(s)
+		default:
+			return
+		}
+	}
+}
+
+func (w *UsageWriter) flush() {
+	w.mu.Lock()
+	snapshot := w.accum
+	w.accum = make(map[counterKey]*counterAccum)
+	w.mu.Unlock()
+
+	if len(snapshot) == 0 {
+		return
+	}
+
+	// On any failure after the snapshot is taken, merge it back so no
+	// samples are lost; a later flush will retry.
+	restore := func() {
+		w.mu.Lock()
+		defer w.mu.Unlock()
+		for k, v := range snapshot {
+			acc := w.accum[k]
+			if acc == nil {
+				acc = &counterAccum{}
+				w.accum[k] = acc
+			}
+			acc.requests += v.requests
+			acc.bytes += v.bytes
+			acc.errors += v.errors
+		}
+	}
+
+	tx, err := w.db.Begin()
+	if err != nil {
+		log.Printf("[store] flush begin tx: %v", err)
+		restore()
+		return
+	}
+
+	stmt, err := tx.Prepare(`
+		INSERT INTO usage_counters (tenant_id, signal_type, hour_bucket, requests, bytes, errors)
+		VALUES (?, ?, ?, ?, ?, ?)
+		ON CONFLICT(tenant_id, signal_type, hour_bucket) DO UPDATE SET
+			requests = requests + excluded.requests,
+			bytes    = bytes    + excluded.bytes,
+			errors   = errors   + excluded.errors
+	`)
+	if err != nil {
+		tx.Rollback()
+		log.Printf("[store] flush prepare: %v", err)
+		restore()
+		return
+	}
+
+	for key, acc := range snapshot {
+		if _, err := stmt.Exec(key.tenantID, key.signalType, key.hourBucket, acc.requests, acc.bytes, acc.errors); err != nil {
+			stmt.Close()
+			tx.Rollback()
+			log.Printf("[store] flush exec: %v", err)
+			restore()
+			return
+		}
+	}
+	stmt.Close()
+
+	if err := tx.Commit(); err != nil {
+		log.Printf("[store] flush commit: %v", err)
+		restore()
+		return
+	}
+}
+
+// record enqueues one sample. Never blocks: if the bounded channel is full
+// the sample is dropped (counted in DroppedSamples).
+func (w *UsageWriter) record(s counterSample) {
+	select {
+	case w.ch <- s:
+	default:
+		atomic.AddInt64(&w.dropped, 1)
+	}
+}
+
+// RecordUsage enqueues one usage sample. Never blocks: if the bounded channel
+// is full the sample is dropped (counted in DroppedSamples).
+func (s *Store) RecordUsage(tenantID int64, signalType string, statusCode int, byteCount int64) {
+	hourBucket := time.Now().UTC().Format("2006-01-02T15")
+	isErr := statusCode >= 400
+	sample := counterSample{
+		tenantID:   tenantID,
+		signalType: signalType,
+		hourBucket: hourBucket,
+		requests:   1,
+		bytes:      byteCount,
+		isError:    isErr,
+	}
+	s.writer.record(sample)
+}
+
+func (s *Store) DroppedSamples() int64 {
+	return atomic.LoadInt64(&s.writer.dropped)
+}
+
+// FlushCounters triggers an immediate synchronous flush of in-memory usage
+// counters via the writer goroutine. Exposed for testing.
+func (s *Store) FlushCounters() {
+	select {
+	case <-s.writer.done:
+		return // already stopped — Stop() drained and flushed
+	default:
+	}
+	done := make(chan struct{})
+	s.writer.flushReq <- done
+	<-done
+}
+
+// CounterTotals returns aggregate totals across all counter rows for a tenant.
+func (s *Store) CounterTotals(ctx context.Context, tenantID int64) (requests, bytes, errors int64, err error) {
+	err = s.db.QueryRowContext(ctx,
+		`SELECT COALESCE(SUM(requests),0), COALESCE(SUM(bytes),0), COALESCE(SUM(errors),0)
+		 FROM usage_counters WHERE tenant_id = ?`,
+		tenantID).Scan(&requests, &bytes, &errors)
+	return
 }
 
 func migrate(db *sql.DB) error {
@@ -115,6 +354,16 @@ func migrate(db *sql.DB) error {
 
 	CREATE INDEX IF NOT EXISTS idx_usage_tenant_time ON usage_logs(tenant_id, created_at);
 	CREATE INDEX IF NOT EXISTS idx_usage_created ON usage_logs(created_at);
+
+	CREATE TABLE IF NOT EXISTS usage_counters (
+	    tenant_id   INTEGER NOT NULL REFERENCES tenants(id) ON DELETE CASCADE,
+	    signal_type TEXT    NOT NULL,
+	    hour_bucket TEXT    NOT NULL,
+	    requests    INTEGER NOT NULL DEFAULT 0,
+	    bytes       INTEGER NOT NULL DEFAULT 0,
+	    errors      INTEGER NOT NULL DEFAULT 0,
+	    PRIMARY KEY (tenant_id, signal_type, hour_bucket)
+	);
 
 	CREATE TABLE IF NOT EXISTS api_keys (
 	    id           INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -526,7 +775,7 @@ func (s *Store) GetUsageData(ctx context.Context, tenantID int64, rng string) (*
 		hours = 168
 	}
 
-	since := time.Now().Add(-time.Duration(hours) * time.Hour)
+	since := time.Now().UTC().Add(-time.Duration(hours) * time.Hour).Format("2006-01-02T15")
 
 	requests, err := s.getUsageRequests(ctx, tenantID, since, hours)
 	if err != nil {
@@ -554,17 +803,22 @@ type UsageData struct {
 	SignalTypes []SignalBucket  `json:"signal_types"`
 }
 
-func (s *Store) getUsageRequests(ctx context.Context, tenantID int64, since time.Time, hours int) ([]RequestBucket, error) {
-	groupBy := "%Y-%m-%d %H:00"
+func (s *Store) getUsageRequests(ctx context.Context, tenantID int64, since string, hours int) ([]RequestBucket, error) {
+	var query string
 	if hours > 168 {
-		groupBy = "%Y-%m-%d"
+		// 30d: group by day
+		query = `SELECT substr(hour_bucket, 1, 10) AS label, SUM(requests) AS cnt
+			 FROM usage_counters
+			 WHERE tenant_id = ? AND hour_bucket >= ?
+			 GROUP BY label ORDER BY label`
+	} else {
+		// 24h/7d: group by hour
+		query = `SELECT hour_bucket AS label, SUM(requests) AS cnt
+			 FROM usage_counters
+			 WHERE tenant_id = ? AND hour_bucket >= ?
+			 GROUP BY label ORDER BY label`
 	}
-	rows, err := s.db.QueryContext(ctx,
-		`SELECT strftime(?, created_at) AS label, COUNT(*) AS cnt
-		 FROM usage_logs
-		 WHERE tenant_id = ? AND created_at >= ?
-		 GROUP BY label ORDER BY label`,
-		groupBy, tenantID, since)
+	rows, err := s.db.QueryContext(ctx, query, tenantID, since)
 	if err != nil {
 		return nil, err
 	}
@@ -581,11 +835,11 @@ func (s *Store) getUsageRequests(ctx context.Context, tenantID int64, since time
 	return buckets, rows.Err()
 }
 
-func (s *Store) getUsageVolumes(ctx context.Context, tenantID int64, since time.Time) ([]VolumeBucket, error) {
+func (s *Store) getUsageVolumes(ctx context.Context, tenantID int64, since string) ([]VolumeBucket, error) {
 	rows, err := s.db.QueryContext(ctx,
-		`SELECT strftime('%Y-%m-%d', created_at) AS label, SUM(byte_count) AS total
-		 FROM usage_logs
-		 WHERE tenant_id = ? AND created_at >= ?
+		`SELECT substr(hour_bucket, 1, 10) AS label, SUM(bytes) AS total
+		 FROM usage_counters
+		 WHERE tenant_id = ? AND hour_bucket >= ?
 		 GROUP BY label ORDER BY label`,
 		tenantID, since)
 	if err != nil {
@@ -604,11 +858,11 @@ func (s *Store) getUsageVolumes(ctx context.Context, tenantID int64, since time.
 	return buckets, rows.Err()
 }
 
-func (s *Store) getUsageSignalTypes(ctx context.Context, tenantID int64, since time.Time) ([]SignalBucket, error) {
+func (s *Store) getUsageSignalTypes(ctx context.Context, tenantID int64, since string) ([]SignalBucket, error) {
 	rows, err := s.db.QueryContext(ctx,
-		`SELECT signal_type, COUNT(*) AS cnt
-		 FROM usage_logs
-		 WHERE tenant_id = ? AND created_at >= ?
+		`SELECT signal_type, SUM(requests) AS cnt
+		 FROM usage_counters
+		 WHERE tenant_id = ? AND hour_bucket >= ?
 		 GROUP BY signal_type ORDER BY cnt DESC`,
 		tenantID, since)
 	if err != nil {

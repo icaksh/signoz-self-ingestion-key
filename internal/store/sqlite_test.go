@@ -6,6 +6,7 @@ import (
 	"os"
 	"strconv"
 	"strings"
+	"sync/atomic"
 	"testing"
 )
 
@@ -145,10 +146,11 @@ func TestUsageData(t *testing.T) {
 	s := testDB(t)
 
 	tenant, _ := s.CreateTenant(ctx, "app", "")
-	s.LogUsage(ctx, tenant.ID, "traces", 1000, 200)
-	s.LogUsage(ctx, tenant.ID, "traces", 2000, 200)
-	s.LogUsage(ctx, tenant.ID, "metrics", 500, 200)
-	s.LogUsage(ctx, tenant.ID, "logs", 100, 200)
+	s.RecordUsage(tenant.ID, "traces", 200, 1000)
+	s.RecordUsage(tenant.ID, "traces", 200, 2000)
+	s.RecordUsage(tenant.ID, "metrics", 200, 500)
+	s.RecordUsage(tenant.ID, "logs", 200, 100)
+	s.FlushCounters()
 
 	data, err := s.GetUsageData(ctx, tenant.ID, "7d")
 	if err != nil {
@@ -164,17 +166,23 @@ func TestCleanupOldLogs(t *testing.T) {
 	s := testDB(t)
 
 	tenant, _ := s.CreateTenant(ctx, "app", "")
-	// Insert usage then verify cleanup with 90-day retention does NOT delete recent data
-	s.LogUsage(ctx, tenant.ID, "traces", 100, 200)
+	// usage_counters are the source of truth now; usage_logs keeps legacy rows.
+	// Insert a legacy row directly and verify CleanupOldLogs only touches usage_logs.
+	if _, err := s.db.ExecContext(ctx,
+		`INSERT INTO usage_logs (tenant_id, signal_type, byte_count, status_code) VALUES (?, 'traces', 100, 200)`,
+		tenant.ID); err != nil {
+		t.Fatalf("insert legacy usage: %v", err)
+	}
 
 	err := s.CleanupOldLogs(ctx, 90)
 	if err != nil {
 		t.Fatalf("cleanup: %v", err)
 	}
 
-	data, _ := s.GetUsageData(ctx, tenant.ID, "7d")
-	if len(data.SignalTypes) == 0 {
-		t.Fatal("expected data preserved with 90-day retention")
+	var legacyCount int
+	s.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM usage_logs WHERE tenant_id = ?`, tenant.ID).Scan(&legacyCount)
+	if legacyCount != 1 {
+		t.Fatalf("expected legacy usage_logs row preserved, got %d", legacyCount)
 	}
 
 	// Cleanup with 36500 days (~100 years) also preserves data
@@ -182,9 +190,9 @@ func TestCleanupOldLogs(t *testing.T) {
 	if err != nil {
 		t.Fatalf("cleanup: %v", err)
 	}
-	data, _ = s.GetUsageData(ctx, tenant.ID, "7d")
-	if len(data.SignalTypes) == 0 {
-		t.Fatal("expected data preserved")
+	s.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM usage_logs WHERE tenant_id = ?`, tenant.ID).Scan(&legacyCount)
+	if legacyCount != 1 {
+		t.Fatalf("expected legacy usage_logs row preserved, got %d", legacyCount)
 	}
 }
 
@@ -361,5 +369,205 @@ func TestAPIKeyNoPlaintextInDB(t *testing.T) {
 	s.db.QueryRowContext(ctx, `SELECT key_hash FROM api_keys WHERE tenant_id = ? LIMIT 1`, tenant.ID).Scan(&hash)
 	if strings.Contains(hash, tenant.APIKey) {
 		t.Fatal("key_hash must not contain plaintext key")
+	}
+}
+
+func TestUsageWriterBasic(t *testing.T) {
+	ctx := context.Background()
+	s := testDB(t)
+
+	tenant, _ := s.CreateTenant(ctx, "writer-test", "")
+
+	// Record 5 samples: 3 traces (1 error), 2 metrics (0 errors)
+	s.RecordUsage(tenant.ID, "traces", 200, 100)
+	s.RecordUsage(tenant.ID, "traces", 500, 200) // error
+	s.RecordUsage(tenant.ID, "traces", 200, 300)
+	s.RecordUsage(tenant.ID, "metrics", 200, 50)
+	s.RecordUsage(tenant.ID, "metrics", 200, 75)
+
+	s.FlushCounters()
+
+	req, bytes, errs, err := s.CounterTotals(ctx, tenant.ID)
+	if err != nil {
+		t.Fatalf("counter totals: %v", err)
+	}
+	if req != 5 {
+		t.Fatalf("expected 5 requests, got %d", req)
+	}
+	if bytes != 725 {
+		t.Fatalf("expected 725 bytes (100+200+300+50+75), got %d", bytes)
+	}
+	if errs != 1 {
+		t.Fatalf("expected 1 error, got %d", errs)
+	}
+
+	// Verify GetUsageData still works
+	data, err := s.GetUsageData(ctx, tenant.ID, "7d")
+	if err != nil {
+		t.Fatalf("get usage: %v", err)
+	}
+	if len(data.SignalTypes) != 2 {
+		t.Fatalf("expected 2 signal types, got %d", len(data.SignalTypes))
+	}
+}
+
+func TestUsageWriterBulk(t *testing.T) {
+	ctx := context.Background()
+	s := testDB(t)
+
+	tenant, _ := s.CreateTenant(ctx, "bulk-test", "")
+
+	const n = 10000
+	var expectBytes int64
+	for i := 0; i < n; i++ {
+		signalType := "traces"
+		if i%3 == 0 {
+			signalType = "metrics"
+		} else if i%5 == 0 {
+			signalType = "logs"
+		}
+		sc := 200
+		if i%10 == 0 {
+			sc = 500
+		}
+		bc := int64(100 + i%900)
+		expectBytes += bc
+		s.RecordUsage(tenant.ID, signalType, sc, bc)
+	}
+
+	s.FlushCounters()
+
+	req, bytes, errs, err := s.CounterTotals(ctx, tenant.ID)
+	if err != nil {
+		t.Fatalf("counter totals: %v", err)
+	}
+	if req != n {
+		t.Fatalf("expected %d requests, got %d", n, req)
+	}
+	if bytes != expectBytes {
+		t.Fatalf("expected %d bytes, got %d", expectBytes, bytes)
+	}
+	if errs != n/10 {
+		t.Fatalf("expected %d errors (i%%10==0), got %d", n/10, errs)
+	}
+}
+
+func TestUsageWriterChannelFull(t *testing.T) {
+	// Bare writer with no consumer goroutine: the channel fills and excess
+	// samples must be dropped instead of blocking.
+	w := &UsageWriter{ch: make(chan counterSample, 4096)}
+
+	const over = 100
+	for i := 0; i < 4096+over; i++ {
+		w.record(counterSample{tenantID: 1, signalType: "traces", hourBucket: "h", requests: 1, bytes: 1})
+	}
+
+	dropped := atomic.LoadInt64(&w.dropped)
+	if dropped == 0 {
+		t.Fatal("expected some dropped samples when channel overflows")
+	}
+	if dropped < over {
+		t.Fatalf("expected >= %d dropped, got %d", over, dropped)
+	}
+}
+
+func TestUsageWriterGoroutineExit(t *testing.T) {
+	path := t.TempDir() + "/goroutine-test.db"
+	s, err := Open(path)
+	if err != nil {
+		t.Fatalf("open: %v", err)
+	}
+
+	tenant, _ := s.CreateTenant(t.Context(), "goroutine-test", "")
+	s.RecordUsage(tenant.ID, "traces", 200, 100)
+
+	// Close should block until writer flushes and exits
+	s.Close()
+	// Reaching here means the writer goroutine stopped cleanly.
+}
+
+func TestUsageWriterShutdownFlush(t *testing.T) {
+	path := t.TempDir() + "/shutdown-flush.db"
+	s, err := Open(path)
+	if err != nil {
+		t.Fatalf("open: %v", err)
+	}
+
+	tenant, _ := s.CreateTenant(t.Context(), "shutdown-flush", "")
+	const n = 5000
+	for i := 0; i < n; i++ {
+		s.RecordUsage(tenant.ID, "traces", 200, 10)
+	}
+
+	// Close flushes everything (Stop drains + flushes)
+	s.Close()
+
+	// Reopen and verify all samples flushed
+	s2, err := Open(path)
+	if err != nil {
+		t.Fatalf("reopen: %v", err)
+	}
+	defer s2.Close()
+	req, _, _, err := s2.CounterTotals(t.Context(), tenant.ID)
+	if err != nil {
+		t.Fatalf("counter totals: %v", err)
+	}
+	if req != n {
+		t.Fatalf("expected %d requests after shutdown flush, got %d", n, req)
+	}
+}
+
+func TestOnDeleteCascadeCounters(t *testing.T) {
+	ctx := context.Background()
+	s := testDB(t)
+
+	tenant, _ := s.CreateTenant(ctx, "cascade-counter", "")
+	s.RecordUsage(tenant.ID, "traces", 200, 100)
+	s.FlushCounters()
+
+	var cnt int
+	s.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM usage_counters WHERE tenant_id = ?`, tenant.ID).Scan(&cnt)
+	if cnt == 0 {
+		t.Fatal("expected counter rows before delete")
+	}
+
+	s.DeleteTenant(ctx, tenant.ID)
+
+	s.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM usage_counters WHERE tenant_id = ?`, tenant.ID).Scan(&cnt)
+	if cnt != 0 {
+		t.Fatalf("ON DELETE CASCADE failed: expected 0 counter rows, got %d", cnt)
+	}
+}
+
+func TestGetUsageDataFromCounters(t *testing.T) {
+	ctx := context.Background()
+	s := testDB(t)
+
+	tenant, _ := s.CreateTenant(ctx, "counters-usage", "")
+	// Insert counter rows directly across multiple hour buckets
+	_, err := s.db.ExecContext(ctx, `
+		INSERT INTO usage_counters (tenant_id, signal_type, hour_bucket, requests, bytes, errors) VALUES
+		(?, 'traces', strftime('%Y-%m-%dT%H','now','-2 hours'), 10, 1000, 1),
+		(?, 'traces', strftime('%Y-%m-%dT%H','now','-1 hours'), 5, 500, 0),
+		(?, 'metrics', strftime('%Y-%m-%dT%H','now','-1 hours'), 3, 300, 0),
+		(?, 'logs',    strftime('%Y-%m-%dT%H','now','-3 hours'), 7, 700, 2)`,
+		tenant.ID, tenant.ID, tenant.ID, tenant.ID)
+	if err != nil {
+		t.Fatalf("insert counters: %v", err)
+	}
+
+	data, err := s.GetUsageData(ctx, tenant.ID, "24h")
+	if err != nil {
+		t.Fatalf("usage: %v", err)
+	}
+	if len(data.SignalTypes) != 3 {
+		t.Fatalf("expected 3 signal types, got %d", len(data.SignalTypes))
+	}
+	var totalRequests int64
+	for _, b := range data.Requests {
+		totalRequests += b.Count
+	}
+	if totalRequests != 25 {
+		t.Fatalf("expected 25 total requests, got %d", totalRequests)
 	}
 }

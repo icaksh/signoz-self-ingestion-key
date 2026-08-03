@@ -3,11 +3,12 @@ package proxy
 import (
 	"context"
 	"errors"
+	"fmt"
+	"io"
 	"log"
 	"net/http"
 	"net/http/httputil"
 	"net/url"
-	"strconv"
 
 	"github.com/sismedika/otlp-proxy/internal/store"
 )
@@ -17,6 +18,25 @@ type Handler struct {
 	store        *store.Store
 	maxBodyBytes int64
 }
+
+// countingReadCloser wraps an io.ReadCloser and counts the bytes actually read.
+type countingReadCloser struct {
+	io.ReadCloser
+	n int64
+}
+
+func (c *countingReadCloser) Read(p []byte) (int, error) {
+	n, err := c.ReadCloser.Read(p)
+	c.n += int64(n)
+	return n, err
+}
+
+// statusRecorder captures the real upstream status code via ModifyResponse.
+type statusRecorder struct {
+	code int
+}
+
+type ctxKeyStatus struct{}
 
 func NewHandler(signozEndpoint, signozIngestKey string, st *store.Store, maxBodyBytes int64) (*Handler, error) {
 	target, err := url.Parse(signozEndpoint)
@@ -39,6 +59,12 @@ func NewHandler(signozEndpoint, signozIngestKey string, st *store.Store, maxBody
 				req.Header.Set("Authorization", "Bearer "+signozIngestKey)
 			}
 		},
+		ModifyResponse: func(resp *http.Response) error {
+			if sr, ok := resp.Request.Context().Value(ctxKeyStatus{}).(*statusRecorder); ok {
+				sr.code = resp.StatusCode
+			}
+			return nil
+		},
 		ErrorHandler: func(w http.ResponseWriter, r *http.Request, err error) {
 			var maxBytesErr *http.MaxBytesError
 			if errors.As(err, &maxBytesErr) {
@@ -55,16 +81,18 @@ func NewHandler(signozEndpoint, signozIngestKey string, st *store.Store, maxBody
 }
 
 func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
-	if r.URL.Path == "/healthz" && r.Method == "GET" {
+	// Health check — no auth
+	if r.Method == "GET" && r.URL.Path == "/healthz" {
 		if err := h.store.Ping(r.Context()); err != nil {
 			w.Header().Set("Content-Type", "application/json")
 			w.WriteHeader(http.StatusServiceUnavailable)
-			w.Write([]byte(`{"status":"unhealthy","error":"db ping failed"}`))
+			w.Write([]byte(`{"status":"unhealthy"}`))
 			return
 		}
+		dropped := h.store.DroppedSamples()
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusOK)
-		w.Write([]byte(`{"status":"ok"}`))
+		fmt.Fprintf(w, `{"status":"ok","dropped":%d}`, dropped)
 		return
 	}
 
@@ -113,14 +141,27 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	byteCount := int64(0)
-	if cl := r.Header.Get("Content-Length"); cl != "" {
-		byteCount, _ = strconv.ParseInt(cl, 10, 64)
+	// Wrap body for accurate byte counting
+	var cr *countingReadCloser
+	if r.Body != nil {
+		cr = &countingReadCloser{ReadCloser: r.Body}
+		r.Body = cr
 	}
+
+	// Inject status recorder into context for ModifyResponse. Default 502 —
+	// the ErrorHandler path never calls ModifyResponse, so a transport error
+	// keeps this default.
+	sr := &statusRecorder{code: http.StatusBadGateway}
+	ctx := context.WithValue(r.Context(), ctxKeyStatus{}, sr)
+	r = r.WithContext(ctx)
 
 	h.proxy.ServeHTTP(w, r)
 
-	go func() {
-		h.store.LogUsage(context.Background(), tenant.ID, signalType, byteCount, 200)
-	}()
+	// Read actual values after proxy completes
+	actualBytes := int64(0)
+	if cr != nil {
+		actualBytes = cr.n
+	}
+
+	h.store.RecordUsage(tenant.ID, signalType, sr.code, actualBytes)
 }
