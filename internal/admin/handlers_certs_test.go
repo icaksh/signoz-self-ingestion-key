@@ -9,6 +9,7 @@ import (
 	"encoding/json"
 	"encoding/pem"
 	"fmt"
+	"io"
 	"math/big"
 	"net/http"
 	"net/http/cookiejar"
@@ -243,4 +244,57 @@ func urlEscape(s string) string {
 		" ", "%20",
 	)
 	return r.Replace(s)
+}
+
+func newCertDisabledServer(t *testing.T) (*httptest.Server, *store.Store) {
+	t.Helper()
+	st, err := store.Open(t.TempDir() + "/test.db")
+	if err != nil {
+		t.Fatalf("open: %v", err)
+	}
+	t.Cleanup(func() { st.Close() })
+
+	// caClient == nil => CA integration disabled
+	srv := NewServer(st, "127.0.0.1:0", []byte("0123456789abcdef0123456789abcdef"), false,
+		nil, nil, "", 6514, 90*24*time.Hour)
+	ts := httptest.NewServer(srv.Handler)
+	t.Cleanup(ts.Close)
+	return ts, st
+}
+
+func TestKeygenReturns503WhenCADisabled(t *testing.T) {
+	ts, st := newCertDisabledServer(t)
+	client := adminLogin(t, ts)
+
+	tenant, _ := st.CreateTenant(t.Context(), "disabled-ca", "", nil)
+
+	resp, err := client.Post(ts.URL+fmt.Sprintf("/tenants/%d/certificates/keygen", tenant.ID),
+		"application/x-www-form-urlencoded", strings.NewReader(""))
+	if err != nil {
+		t.Fatalf("post: %v", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusServiceUnavailable {
+		t.Fatalf("expected 503, got %d", resp.StatusCode)
+	}
+}
+
+func TestCertListHidesIssueWhenCADisabled(t *testing.T) {
+	ts, st := newCertDisabledServer(t)
+	client := adminLogin(t, ts)
+
+	tenant, _ := st.CreateTenant(t.Context(), "disabled-ca-2", "", nil)
+
+	resp, err := client.Get(ts.URL + fmt.Sprintf("/tenants/%d/certificates", tenant.ID))
+	if err != nil {
+		t.Fatalf("get: %v", err)
+	}
+	defer resp.Body.Close()
+	body, _ := io.ReadAll(resp.Body)
+	if strings.Contains(string(body), "Issue Certificate") {
+		t.Fatal("issue button must be hidden when CA is disabled")
+	}
+	if !strings.Contains(string(body), "CA integration is disabled") {
+		t.Fatal("expected disabled banner")
+	}
 }

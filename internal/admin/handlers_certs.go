@@ -23,12 +23,14 @@ type CertListData struct {
 	Tenant         store.Tenant
 	Certificates   []store.Certificate
 	ExpiryWarnDays int
+	CAEnabled      bool
 }
 
 type CertRowData struct {
 	Certificate    store.Certificate
 	TenantID       int64
 	ExpiryWarnDays int
+	CAEnabled      bool
 }
 
 // CertificatesPage lists all certificates for a tenant.
@@ -48,6 +50,7 @@ func (h *Handlers) CertificatesPage(w http.ResponseWriter, r *http.Request) {
 		Tenant:         *tenant,
 		Certificates:   certs,
 		ExpiryWarnDays: 14,
+		CAEnabled:      h.caClient != nil,
 	})
 }
 
@@ -59,13 +62,13 @@ func (h *Handlers) CertificateIssueForm(w http.ResponseWriter, r *http.Request) 
 		http.Error(w, "not found", http.StatusNotFound)
 		return
 	}
-	h.render(w, "cert_issue", CertListData{Tenant: *tenant, ExpiryWarnDays: 14})
+	h.render(w, "cert_issue", CertListData{Tenant: *tenant, ExpiryWarnDays: 14, CAEnabled: h.caClient != nil})
 }
 
 // CertificateIssue handles CSR-based issuance (preferred).
 func (h *Handlers) CertificateIssue(w http.ResponseWriter, r *http.Request) {
 	if h.caClient == nil {
-		http.Error(w, "CA integration disabled", http.StatusBadRequest)
+		caDisabledError(w)
 		return
 	}
 	tenantID, _ := strconv.ParseInt(r.PathValue("id"), 10, 64)
@@ -105,13 +108,13 @@ func (h *Handlers) CertificateIssue(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	h.render(w, "cert_row", CertRowData{Certificate: *dbCert, TenantID: tenantID, ExpiryWarnDays: 14})
+	h.render(w, "cert_row", CertRowData{Certificate: *dbCert, TenantID: tenantID, ExpiryWarnDays: 14, CAEnabled: h.caClient != nil})
 }
 
 // CertificateIssueWithKeygen handles server-side keypair generation (fallback).
 func (h *Handlers) CertificateIssueWithKeygen(w http.ResponseWriter, r *http.Request) {
 	if h.caClient == nil {
-		http.Error(w, "CA integration disabled", http.StatusBadRequest)
+		caDisabledError(w)
 		return
 	}
 	tenantID, _ := strconv.ParseInt(r.PathValue("id"), 10, 64)
@@ -163,6 +166,12 @@ func (h *Handlers) CertificateIssueWithKeygen(w http.ResponseWriter, r *http.Req
 </div>`, template.HTMLEscapeString(downloadURL))))
 }
 
+// caDisabledError reports that certificate operations are unavailable because
+// the step-ca integration is not configured.
+func caDisabledError(w http.ResponseWriter) {
+	http.Error(w, "certificate issuance unavailable: CA integration disabled (set CA_ENABLED=true and the CA_* variables)", http.StatusServiceUnavailable)
+}
+
 // CertificateRevoke revokes via step-ca AND marks revoked_at locally.
 func (h *Handlers) CertificateRevoke(w http.ResponseWriter, r *http.Request) {
 	tenantID, _ := strconv.ParseInt(r.PathValue("id"), 10, 64)
@@ -187,13 +196,13 @@ func (h *Handlers) CertificateRevoke(w http.ResponseWriter, r *http.Request) {
 	}
 
 	dbCert, _ := h.store.LookupCertificateByID(r.Context(), certID)
-	h.render(w, "cert_row", CertRowData{Certificate: *dbCert, TenantID: tenantID, ExpiryWarnDays: 14})
+	h.render(w, "cert_row", CertRowData{Certificate: *dbCert, TenantID: tenantID, ExpiryWarnDays: 14, CAEnabled: h.caClient != nil})
 }
 
 // CertificateRenew issues a renewed certificate (admin-initiated, new key).
 func (h *Handlers) CertificateRenew(w http.ResponseWriter, r *http.Request) {
 	if h.caClient == nil {
-		http.Error(w, "CA integration disabled", http.StatusBadRequest)
+		caDisabledError(w)
 		return
 	}
 	tenantID, _ := strconv.ParseInt(r.PathValue("id"), 10, 64)
@@ -265,7 +274,7 @@ func (h *Handlers) CertificateDownload(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "certificate not found", http.StatusNotFound)
 		return
 	}
-	h.render(w, "cert_row", CertRowData{Certificate: *cert, TenantID: tenantID, ExpiryWarnDays: 14})
+	h.render(w, "cert_row", CertRowData{Certificate: *cert, TenantID: tenantID, ExpiryWarnDays: 14, CAEnabled: h.caClient != nil})
 }
 
 // DownloadByToken serves the single-use zip bundle (public, token-scoped).

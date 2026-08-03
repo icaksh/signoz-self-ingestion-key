@@ -125,8 +125,8 @@ func percentOf(used, quota int64) int {
 
 // --- certificate template helpers ---
 
-func certRowData(cert store.Certificate, tenantID int64, warnDays int) CertRowData {
-	return CertRowData{Certificate: cert, TenantID: tenantID, ExpiryWarnDays: warnDays}
+func certRowData(cert store.Certificate, tenantID int64, warnDays int, caEnabled bool) CertRowData {
+	return CertRowData{Certificate: cert, TenantID: tenantID, ExpiryWarnDays: warnDays, CAEnabled: caEnabled}
 }
 
 func formatTime(t time.Time) string {

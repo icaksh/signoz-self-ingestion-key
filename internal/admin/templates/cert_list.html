@@ -5,8 +5,16 @@
         <h1 class="text-xl font-bold text-white">Certificates: {{.Tenant.Name}}</h1>
         <a href="/" class="text-sm text-gray-400 hover:text-indigo-400 transition-colors">&larr; Back to tenants</a>
     </div>
+    {{if .CAEnabled}}
     <a href="/tenants/{{.Tenant.ID}}/certificates/new" class="rounded-lg bg-indigo-600 px-4 py-2 text-sm font-semibold text-white hover:bg-indigo-500 transition-colors">Issue Certificate</a>
+    {{end}}
 </div>
+{{if not .CAEnabled}}
+<div class="mb-4 rounded-lg border border-amber-500/30 bg-amber-950/30 p-4 text-sm text-amber-300">
+    CA integration is disabled — certificate issuance and renewal are unavailable.
+    Set <code>CA_ENABLED=true</code> plus the <code>CA_*</code> variables to enable it.
+</div>
+{{end}}
 <div id="form-area"></div>
 <div class="rounded-xl border border-gray-800 bg-gray-900/50 overflow-hidden">
     <table class="w-full">
@@ -23,7 +31,7 @@
         </thead>
         <tbody id="cert-list" class="divide-y divide-gray-800">
             {{range .Certificates}}
-                {{template "cert_row" (certRowData . $.Tenant.ID $.ExpiryWarnDays)}}
+                {{template "cert_row" (certRowData . $.Tenant.ID $.ExpiryWarnDays $.CAEnabled)}}
             {{end}}
         </tbody>
     </table>

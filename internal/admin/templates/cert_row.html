@@ -18,12 +18,14 @@
     <td class="px-6 py-4 text-sm text-gray-500">{{if .Certificate.LastSeenAt.Valid}}{{formatTime .Certificate.LastSeenAt.Time}}{{else}}never{{end}}</td>
     <td class="px-6 py-4">
         <div class="flex items-center gap-2">
+            {{if .CAEnabled}}
             {{if not .Certificate.RevokedAt.Valid}}
             <button hx-post="/tenants/{{.TenantID}}/certificates/{{.Certificate.ID}}/renew" hx-target="#cert-{{.Certificate.ID}}" hx-swap="outerHTML" hx-confirm="Renew this certificate (new keypair)?"
                 class="rounded-lg px-3 py-1.5 text-xs font-medium text-gray-300 hover:bg-gray-700 transition-colors">Renew</button>
+            {{end}}
+            {{end}}
             <button hx-post="/tenants/{{.TenantID}}/certificates/{{.Certificate.ID}}/revoke" hx-target="#cert-{{.Certificate.ID}}" hx-swap="outerHTML" hx-confirm="Revoke this certificate immediately?"
                 class="rounded-lg px-3 py-1.5 text-xs font-medium text-red-400 hover:bg-red-500/10 transition-colors">Revoke</button>
-            {{end}}
             <a href="/tenants/{{.TenantID}}/certificates/{{.Certificate.ID}}/download" class="rounded-lg px-3 py-1.5 text-xs font-medium text-gray-300 hover:bg-gray-700 transition-colors">Details</a>
         </div>
     </td>
