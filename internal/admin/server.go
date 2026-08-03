@@ -1,9 +1,9 @@
 package admin
 
 import (
-	"embed"
 	"crypto/hmac"
 	"crypto/sha256"
+	"embed"
 	"encoding/base64"
 	"encoding/json"
 	"html/template"
@@ -21,12 +21,15 @@ import (
 var templateFS embed.FS
 
 type Server struct {
-	store *store.Store
-	tmpl  *template.Template
-	h     *Handlers
+	store        *store.Store
+	tmpl         *template.Template
+	h            *Handlers
+	signingKey   []byte
+	cookieSecure bool
+	loginLimiter *LoginLimiter
 }
 
-func NewServer(st *store.Store, addr string) *http.Server {
+func NewServer(st *store.Store, addr string, signingKey []byte, cookieSecure bool) *http.Server {
 	funcMap := template.FuncMap{
 		"maskKey": maskKey,
 	}
@@ -34,11 +37,12 @@ func NewServer(st *store.Store, addr string) *http.Server {
 	tmpl := template.Must(template.New("").Funcs(funcMap).ParseFS(templateFS, "templates/*.html"))
 
 	h := NewHandlers(st, tmpl)
-	s := &Server{store: st, tmpl: tmpl, h: h}
+	s := &Server{store: st, tmpl: tmpl, h: h, signingKey: signingKey, cookieSecure: cookieSecure, loginLimiter: NewLoginLimiter()}
 
 	mux := http.NewServeMux()
 
 	// public
+	mux.HandleFunc("GET /healthz", s.healthz)
 	mux.HandleFunc("GET /login", s.loginPage)
 	mux.HandleFunc("POST /login", s.loginAction)
 	mux.HandleFunc("GET /setup", s.setupPage)
@@ -73,13 +77,23 @@ func loggingMiddleware(next http.Handler) http.Handler {
 	})
 }
 
-// --- auth ---
+func (s *Server) healthz(w http.ResponseWriter, r *http.Request) {
+	if err := s.store.Ping(r.Context()); err != nil {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusServiceUnavailable)
+		w.Write([]byte(`{"status":"unhealthy"}`))
+		return
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusOK)
+	w.Write([]byte(`{"status":"ok"}`))
+}
 
-var signingKey = []byte("change-me-in-production")
+// --- auth ---
 
 func (s *Server) makeToken(userID int64, username string) string {
 	payload, _ := json.Marshal(map[string]any{"id": userID, "u": username, "exp": time.Now().Add(24 * time.Hour).Unix()})
-	mac := hmac.New(sha256.New, signingKey)
+	mac := hmac.New(sha256.New, s.signingKey)
 	mac.Write(payload)
 	sig := mac.Sum(nil)
 	return base64.RawURLEncoding.EncodeToString(payload) + "." + base64.RawURLEncoding.EncodeToString(sig)
@@ -98,7 +112,7 @@ func (s *Server) verifyToken(cookie string) (int64, string, bool) {
 	if err != nil {
 		return 0, "", false
 	}
-	mac := hmac.New(sha256.New, signingKey)
+	mac := hmac.New(sha256.New, s.signingKey)
 	mac.Write(payload)
 	if !hmac.Equal(mac.Sum(nil), sig) {
 		return 0, "", false
@@ -138,26 +152,53 @@ func (s *Server) loginPage(w http.ResponseWriter, r *http.Request) {
 		http.Redirect(w, r, "/setup", http.StatusSeeOther)
 		return
 	}
-	s.tmpl.ExecuteTemplate(w, "login", nil)
+	if err := s.tmpl.ExecuteTemplate(w, "login", nil); err != nil {
+		log.Printf("[admin] template error: %v", err)
+	}
 }
+
+// dummyHash is a valid bcrypt hash used to make login timing constant even
+// when the username does not exist.
+var dummyHash = []byte("$2a$10$tSjm/ToHuip7KGgiUuwwBOfyw1q1bdg.hpm2ziKRNY0Zj4MaBbBR6")
 
 func (s *Server) loginAction(w http.ResponseWriter, r *http.Request) {
 	username := r.FormValue("username")
 	password := r.FormValue("password")
 
+	clientIP := r.RemoteAddr
+	if fwd := r.Header.Get("X-Forwarded-For"); fwd != "" {
+		clientIP = strings.SplitN(fwd, ",", 2)[0]
+	}
+
+	ipKey := "ip:" + clientIP
+	userKey := "user:" + username
+
+	if !s.loginLimiter.Allow(ipKey) || !s.loginLimiter.Allow(userKey) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusTooManyRequests)
+		w.Write([]byte(`{"error":"too many attempts"}`))
+		return
+	}
+
 	id, hash, err := s.store.GetUserByUsername(r.Context(), username)
 	if err != nil || id == 0 {
-		http.Error(w, "invalid credentials", http.StatusUnauthorized)
+		// Constant-time: always run a bcrypt comparison against a dummy hash
+		bcrypt.CompareHashAndPassword(dummyHash, []byte(password))
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusUnauthorized)
+		w.Write([]byte(`{"error":"invalid credentials"}`))
 		return
 	}
 	if bcrypt.CompareHashAndPassword([]byte(hash), []byte(password)) != nil {
-		http.Error(w, "invalid credentials", http.StatusUnauthorized)
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusUnauthorized)
+		w.Write([]byte(`{"error":"invalid credentials"}`))
 		return
 	}
 	token := s.makeToken(id, username)
 	http.SetCookie(w, &http.Cookie{
 		Name: "session", Value: token, Path: "/",
-		HttpOnly: true, SameSite: http.SameSiteStrictMode,
+		HttpOnly: true, Secure: s.cookieSecure, SameSite: http.SameSiteStrictMode,
 		MaxAge: 86400,
 	})
 	http.Redirect(w, r, "/", http.StatusSeeOther)
@@ -169,7 +210,9 @@ func (s *Server) setupPage(w http.ResponseWriter, r *http.Request) {
 		http.Redirect(w, r, "/login", http.StatusSeeOther)
 		return
 	}
-	s.tmpl.ExecuteTemplate(w, "setup", nil)
+	if err := s.tmpl.ExecuteTemplate(w, "setup", nil); err != nil {
+		log.Printf("[admin] template error: %v", err)
+	}
 }
 
 func (s *Server) setupAction(w http.ResponseWriter, r *http.Request) {
@@ -184,7 +227,16 @@ func (s *Server) setupAction(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "username and password required", http.StatusBadRequest)
 		return
 	}
-	hash, _ := bcrypt.GenerateFromPassword([]byte(password), bcrypt.DefaultCost)
+	if len(password) < 12 {
+		http.Error(w, "password must be at least 12 characters", http.StatusBadRequest)
+		return
+	}
+	hash, err := bcrypt.GenerateFromPassword([]byte(password), bcrypt.DefaultCost)
+	if err != nil {
+		log.Printf("[admin] bcrypt error: %v", err)
+		http.Error(w, "internal error", http.StatusInternalServerError)
+		return
+	}
 	if err := s.store.CreateUser(r.Context(), username, string(hash)); err != nil {
 		http.Error(w, "create user failed", http.StatusInternalServerError)
 		return
@@ -193,7 +245,7 @@ func (s *Server) setupAction(w http.ResponseWriter, r *http.Request) {
 	token := s.makeToken(id, username)
 	http.SetCookie(w, &http.Cookie{
 		Name: "session", Value: token, Path: "/",
-		HttpOnly: true, SameSite: http.SameSiteStrictMode,
+		HttpOnly: true, Secure: s.cookieSecure, SameSite: http.SameSiteStrictMode,
 		MaxAge: 86400,
 	})
 	http.Redirect(w, r, "/", http.StatusSeeOther)

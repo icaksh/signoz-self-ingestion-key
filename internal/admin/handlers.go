@@ -3,6 +3,7 @@ package admin
 import (
 	"encoding/json"
 	"html/template"
+	"log"
 	"net/http"
 	"strconv"
 	"strings"
@@ -40,13 +41,19 @@ func NewHandlers(st *store.Store, tmpl *template.Template) *Handlers {
 	return &Handlers{store: st, tmpl: tmpl}
 }
 
+func (h *Handlers) render(w http.ResponseWriter, name string, data any) {
+	if err := h.tmpl.ExecuteTemplate(w, name, data); err != nil {
+		log.Printf("[admin] template error: %v", err)
+	}
+}
+
 func (h *Handlers) Index(w http.ResponseWriter, r *http.Request) {
 	tenants, err := h.store.ListTenants(r.Context())
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
-	h.tmpl.ExecuteTemplate(w, "index", IndexData{Tenants: tenants})
+	h.render(w, "index", IndexData{Tenants: tenants})
 }
 
 func (h *Handlers) NewForm(w http.ResponseWriter, r *http.Request) {
@@ -55,7 +62,7 @@ func (h *Handlers) NewForm(w http.ResponseWriter, r *http.Request) {
 		Target: "#tenant-list",
 		Swap:   "beforeend",
 	}
-	h.tmpl.ExecuteTemplate(w, "tenant_form", data)
+	h.render(w, "tenant_form", data)
 }
 
 func (h *Handlers) CancelForm(w http.ResponseWriter, r *http.Request) {
@@ -71,9 +78,8 @@ func (h *Handlers) Create(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
-	// trigger client-side key reveal after swap
-	w.Header().Set("HX-Trigger", `{"revealKey":"`+strconv.FormatInt(tenant.ID, 10)+`"}`)
-	h.tmpl.ExecuteTemplate(w, "tenant_row", tenant)
+	// Tenant.APIKey holds the full plaintext key — rendered once in the response body.
+	h.render(w, "tenant_row", tenant)
 }
 
 func (h *Handlers) EditForm(w http.ResponseWriter, r *http.Request) {
@@ -89,7 +95,7 @@ func (h *Handlers) EditForm(w http.ResponseWriter, r *http.Request) {
 		Swap:   "outerHTML",
 		Tenant: *tenant,
 	}
-	h.tmpl.ExecuteTemplate(w, "tenant_form", data)
+	h.render(w, "tenant_form", data)
 }
 
 func (h *Handlers) Update(w http.ResponseWriter, r *http.Request) {
@@ -103,7 +109,7 @@ func (h *Handlers) Update(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	tenant, _ := h.store.LookupTenantByID(r.Context(), id)
-	h.tmpl.ExecuteTemplate(w, "tenant_row", tenant)
+	h.render(w, "tenant_row", tenant)
 }
 
 func (h *Handlers) Delete(w http.ResponseWriter, r *http.Request) {
@@ -128,8 +134,9 @@ func (h *Handlers) RegenerateKey(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	tenant.APIKey = newKey
-	w.Header().Set("HX-Trigger", `{"showKey":"`+newKey+`"}`)
-	h.tmpl.ExecuteTemplate(w, "tenant_row", tenant)
+	tenant.KeyPrefix = newKey[:12]
+	// Full plaintext key returned once in the response body.
+	h.render(w, "tenant_row", tenant)
 }
 
 func (h *Handlers) UsagePage(w http.ResponseWriter, r *http.Request) {
@@ -139,7 +146,7 @@ func (h *Handlers) UsagePage(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "not found", http.StatusNotFound)
 		return
 	}
-	h.tmpl.ExecuteTemplate(w, "tenant_usage", UsagePage{Tenant: *tenant})
+	h.render(w, "tenant_usage", UsagePage{Tenant: *tenant})
 }
 
 func (h *Handlers) UsageData(w http.ResponseWriter, r *http.Request) {
@@ -167,7 +174,7 @@ func (h *Handlers) UsersPage(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
-	h.tmpl.ExecuteTemplate(w, "users", UsersPage{Users: users})
+	h.render(w, "users", UsersPage{Users: users})
 }
 
 func (h *Handlers) CreateUser(w http.ResponseWriter, r *http.Request) {
@@ -177,20 +184,29 @@ func (h *Handlers) CreateUser(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "username and password required", http.StatusBadRequest)
 		return
 	}
-	hash, _ := bcrypt.GenerateFromPassword([]byte(password), bcrypt.DefaultCost)
+	if len(password) < 12 {
+		http.Error(w, "password must be at least 12 characters", http.StatusBadRequest)
+		return
+	}
+	hash, err := bcrypt.GenerateFromPassword([]byte(password), bcrypt.DefaultCost)
+	if err != nil {
+		log.Printf("[admin] bcrypt error: %v", err)
+		http.Error(w, "internal error", http.StatusInternalServerError)
+		return
+	}
 	if err := h.store.CreateUser(r.Context(), username, string(hash)); err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
 	users, _ := h.store.ListUsers(r.Context())
-	h.tmpl.ExecuteTemplate(w, "user_list", UsersPage{Users: users})
+	h.render(w, "user_list", UsersPage{Users: users})
 }
 
 func (h *Handlers) DeleteUser(w http.ResponseWriter, r *http.Request) {
 	id, _ := strconv.ParseInt(r.PathValue("id"), 10, 64)
 	_ = h.store.DeleteUser(r.Context(), id)
 	users, _ := h.store.ListUsers(r.Context())
-	h.tmpl.ExecuteTemplate(w, "user_list", UsersPage{Users: users})
+	h.render(w, "user_list", UsersPage{Users: users})
 }
 
 func (h *Handlers) Logout(w http.ResponseWriter, r *http.Request) {

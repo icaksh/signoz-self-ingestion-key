@@ -4,7 +4,8 @@ services:
     container_name: otlp-proxy
     ports:
       - "${PROXY_PORT:-4318}:4318"
-      - "${ADMIN_PORT:-8080}:8080"
+      # Admin port — bind to localhost only in production. Expose only for local dev:
+      # - "127.0.0.1:${ADMIN_PORT:-8080}:8080"
     environment:
       - SIGNOZ_ENDPOINT=${SIGNOZ_ENDPOINT:-http://localhost:4318}
       - SIGNOZ_INGESTION_KEY=${SIGNOZ_INGESTION_KEY:-}

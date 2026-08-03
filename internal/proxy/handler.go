@@ -2,29 +2,31 @@ package proxy
 
 import (
 	"context"
+	"errors"
 	"log"
 	"net/http"
 	"net/http/httputil"
 	"net/url"
 	"strconv"
-	"strings"
 
 	"github.com/sismedika/otlp-proxy/internal/store"
 )
 
 type Handler struct {
-	proxy     *httputil.ReverseProxy
-	store     *store.Store
+	proxy        *httputil.ReverseProxy
+	store        *store.Store
+	maxBodyBytes int64
 }
 
-func NewHandler(signozEndpoint, signozIngestKey string, st *store.Store) (*Handler, error) {
+func NewHandler(signozEndpoint, signozIngestKey string, st *store.Store, maxBodyBytes int64) (*Handler, error) {
 	target, err := url.Parse(signozEndpoint)
 	if err != nil {
 		return nil, err
 	}
 
 	h := &Handler{
-		store: st,
+		store:        st,
+		maxBodyBytes: maxBodyBytes,
 	}
 
 	proxy := &httputil.ReverseProxy{
@@ -32,11 +34,17 @@ func NewHandler(signozEndpoint, signozIngestKey string, st *store.Store) (*Handl
 			req.URL.Scheme = target.Scheme
 			req.URL.Host = target.Host
 			req.Host = target.Host
+			req.Header.Del("X-Tenant-Key")
 			if signozIngestKey != "" {
 				req.Header.Set("Authorization", "Bearer "+signozIngestKey)
 			}
 		},
 		ErrorHandler: func(w http.ResponseWriter, r *http.Request, err error) {
+			var maxBytesErr *http.MaxBytesError
+			if errors.As(err, &maxBytesErr) {
+				http.Error(w, `{"error":"request body too large"}`, http.StatusRequestEntityTooLarge)
+				return
+			}
 			log.Printf("[proxy] backend error: %v", err)
 			http.Error(w, `{"error":"backend unreachable"}`, http.StatusBadGateway)
 		},
@@ -47,19 +55,36 @@ func NewHandler(signozEndpoint, signozIngestKey string, st *store.Store) (*Handl
 }
 
 func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	if r.URL.Path == "/healthz" && r.Method == "GET" {
+		if err := h.store.Ping(r.Context()); err != nil {
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusServiceUnavailable)
+			w.Write([]byte(`{"status":"unhealthy","error":"db ping failed"}`))
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		w.Write([]byte(`{"status":"ok"}`))
+		return
+	}
+
 	path := r.URL.Path
 
 	var signalType string
-	switch {
-	case strings.HasPrefix(path, "/v1/traces"):
+	switch path {
+	case "/v1/traces":
 		signalType = "traces"
-	case strings.HasPrefix(path, "/v1/metrics"):
+	case "/v1/metrics":
 		signalType = "metrics"
-	case strings.HasPrefix(path, "/v1/logs"):
+	case "/v1/logs":
 		signalType = "logs"
 	default:
 		http.Error(w, `{"error":"unknown OTLP path"}`, http.StatusNotFound)
 		return
+	}
+
+	if r.Body != nil {
+		r.Body = http.MaxBytesReader(w, r.Body, h.maxBodyBytes)
 	}
 
 	tenantKey := r.Header.Get("X-Tenant-Key")
@@ -68,7 +93,7 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	tenant, err := h.store.LookupTenant(r.Context(), tenantKey)
+	tenant, err := h.store.LookupTenantByKey(r.Context(), tenantKey)
 	if err != nil {
 		log.Printf("[proxy] tenant lookup error: %v", err)
 		http.Error(w, `{"error":"internal error"}`, http.StatusInternalServerError)
@@ -93,17 +118,9 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		byteCount, _ = strconv.ParseInt(cl, 10, 64)
 	}
 
-	r = r.WithContext(context.WithValue(r.Context(), ctxKeyTenantID{}, tenant.ID))
-	r = r.WithContext(context.WithValue(r.Context(), ctxKeySignalType{}, signalType))
-	r = r.WithContext(context.WithValue(r.Context(), ctxKeyByteCount{}, byteCount))
-
 	h.proxy.ServeHTTP(w, r)
 
 	go func() {
 		h.store.LogUsage(context.Background(), tenant.ID, signalType, byteCount, 200)
 	}()
 }
-
-type ctxKeyTenantID struct{}
-type ctxKeySignalType struct{}
-type ctxKeyByteCount struct{}

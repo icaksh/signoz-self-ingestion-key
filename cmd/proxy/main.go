@@ -27,19 +27,34 @@ func main() {
 	}
 	defer st.Close()
 
-	proxyHandler, err := proxy.NewHandler(cfg.SigNozEndpoint, cfg.SigNozIngestKey, st)
+	proxyHandler, err := proxy.NewHandler(cfg.SigNozEndpoint, cfg.SigNozIngestKey, st, cfg.MaxBodyBytes)
 	if err != nil {
 		log.Fatalf("proxy: %v", err)
 	}
 
 	proxyServer := &http.Server{
-		Addr:    ":" + cfg.ProxyPort,
-		Handler: proxyHandler,
+		Addr:              ":" + cfg.ProxyPort,
+		Handler:           proxyHandler,
+		ReadHeaderTimeout: 5 * time.Second,
+		ReadTimeout:       30 * time.Second,
+		WriteTimeout:      30 * time.Second,
+		IdleTimeout:       120 * time.Second,
+		MaxHeaderBytes:    1 << 16,
 	}
 
-	adminServer := admin.NewServer(st, ":"+cfg.AdminPort)
+	adminServer := admin.NewServer(st, cfg.AdminListenAddr, cfg.SessionSigningKey, cfg.AdminCookieSecure)
+	adminServer.ReadHeaderTimeout = 5 * time.Second
+	adminServer.ReadTimeout = 30 * time.Second
+	adminServer.WriteTimeout = 30 * time.Second
+	adminServer.IdleTimeout = 120 * time.Second
+	adminServer.MaxHeaderBytes = 1 << 16
 
-	// Background cleanup
+	// Run cleanup at startup, then every 24h
+	if err := st.CleanupOldLogs(context.Background(), cfg.UsageRetentionDays); err != nil {
+		log.Printf("[cleanup] startup error: %v", err)
+	} else {
+		log.Printf("[cleanup] purged logs older than %d days", cfg.UsageRetentionDays)
+	}
 	go func() {
 		ticker := time.NewTicker(24 * time.Hour)
 		defer ticker.Stop()
@@ -60,7 +75,7 @@ func main() {
 	}()
 
 	go func() {
-		log.Printf("[admin] listening on :%s", cfg.AdminPort)
+		log.Printf("[admin] listening on %s", cfg.AdminListenAddr)
 		if err := adminServer.ListenAndServe(); err != nil && err != http.ErrServerClosed {
 			log.Fatalf("[admin] %v", err)
 		}
