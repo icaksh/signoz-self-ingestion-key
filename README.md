@@ -60,6 +60,12 @@ curl -X POST http://localhost:4318/v1/traces \
 
 Endpoints: `/v1/traces`, `/v1/metrics`, `/v1/logs` (exact match — near paths return 404)
 
+Tenant identity is stamped server-side: on every forwarded OTLP request the
+proxy removes any client-claimed `tenant.id` / `tenant.name` /
+`service.namespace` resource attributes and injects the authenticated
+`tenant.id` + `tenant.name`. JSON and gzip `Content-Encoding` bodies are
+supported.
+
 Health: `GET /healthz` on both the proxy and admin returns `{"status":"ok"}`.
 
 ## Admin Dashboard

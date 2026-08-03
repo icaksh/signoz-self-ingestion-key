@@ -10,6 +10,8 @@ import (
 	"net/http"
 	"net/http/httputil"
 	"net/url"
+	"strconv"
+	"strings"
 
 	"github.com/sismedika/otlp-proxy/internal/ratelimit"
 	"github.com/sismedika/otlp-proxy/internal/store"
@@ -170,9 +172,30 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Rebuild the body for forwarding
-	r.Body = io.NopCloser(bytes.NewReader(originalBytes))
-	r.ContentLength = originalByteCount
+	// Stamp server-side tenant identity onto the OTLP payload
+	contentType := r.Header.Get("Content-Type")
+	contentEncoding := r.Header.Get("Content-Encoding")
+	tenantIDStr := strconv.FormatInt(tenant.ID, 10)
+
+	newBody, err := stampTenantIdentity(originalBytes, contentType, contentEncoding, signalType, tenantIDStr, tenant.Name)
+	if err != nil {
+		if isMalformedBody(err) {
+			http.Error(w, `{"error":"invalid request body"}`, http.StatusBadRequest)
+		} else {
+			log.Printf("[proxy] otlp processing error: %v", err)
+			http.Error(w, `{"error":"internal error"}`, http.StatusInternalServerError)
+		}
+		return
+	}
+
+	// Replace request body with the stamped version
+	r.Body = io.NopCloser(bytes.NewReader(newBody))
+	r.ContentLength = int64(len(newBody))
+	// If the client sent gzip, the stamped body is re-compressed — keep the
+	// header. Any other encoding is stripped since we forward plain bytes.
+	if !strings.EqualFold(contentEncoding, "gzip") {
+		r.Header.Del("Content-Encoding")
+	}
 
 	// Inject status recorder into context for ModifyResponse. Default 502 —
 	// the ErrorHandler path never calls ModifyResponse, so a transport error
@@ -183,5 +206,6 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 	h.proxy.ServeHTTP(w, r)
 
+	// Account ORIGINAL client bytes, not the re-encoded/stamped size
 	h.store.RecordUsage(tenant.ID, signalType, sr.code, originalByteCount)
 }
