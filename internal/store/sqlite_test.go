@@ -2,8 +2,13 @@ package store
 
 import (
 	"context"
+	"encoding/hex"
 	"os"
+	"strconv"
+	"strings"
+	"sync/atomic"
 	"testing"
+	"time"
 )
 
 func testDB(t *testing.T) *Store {
@@ -21,7 +26,7 @@ func TestCreateAndLookupTenant(t *testing.T) {
 	ctx := context.Background()
 	s := testDB(t)
 
-	tenant, err := s.CreateTenant(ctx, "test-app", "test tenant")
+	tenant, err := s.CreateTenant(ctx, "test-app", "test tenant", nil)
 	if err != nil {
 		t.Fatalf("create: %v", err)
 	}
@@ -31,14 +36,17 @@ func TestCreateAndLookupTenant(t *testing.T) {
 	if tenant.APIKey == "" {
 		t.Fatal("expected API key")
 	}
-	if len(tenant.APIKey) != 32 {
-		t.Fatalf("expected 32-char hex key, got %d", len(tenant.APIKey))
+	if len(tenant.APIKey) != 54 {
+		t.Fatalf("expected 54-char v2 key (ing_<id>_<48 hex>), got %d: %q", len(tenant.APIKey), tenant.APIKey)
+	}
+	if !strings.HasPrefix(tenant.APIKey, "ing_") {
+		t.Fatalf("expected key to start with ing_, got %q", tenant.APIKey)
 	}
 	if !tenant.Active {
 		t.Fatal("expected active tenant")
 	}
 
-	found, err := s.LookupTenant(ctx, tenant.APIKey)
+	found, err := s.LookupTenantByKey(ctx, tenant.APIKey)
 	if err != nil {
 		t.Fatalf("lookup: %v", err)
 	}
@@ -67,8 +75,8 @@ func TestLookupInactiveTenant(t *testing.T) {
 	ctx := context.Background()
 	s := testDB(t)
 
-	tenant, _ := s.CreateTenant(ctx, "app", "")
-	s.UpdateTenant(ctx, tenant.ID, "app", "", false)
+	tenant, _ := s.CreateTenant(ctx, "app", "", nil)
+	s.UpdateTenant(ctx, tenant.ID, "app", "", false, nil)
 
 	found, _ := s.LookupTenant(ctx, tenant.APIKey)
 	if found != nil {
@@ -80,8 +88,8 @@ func TestListTenants(t *testing.T) {
 	ctx := context.Background()
 	s := testDB(t)
 
-	s.CreateTenant(ctx, "a", "")
-	s.CreateTenant(ctx, "b", "")
+	s.CreateTenant(ctx, "a", "", nil)
+	s.CreateTenant(ctx, "b", "", nil)
 
 	list, err := s.ListTenants(ctx)
 	if err != nil {
@@ -96,7 +104,7 @@ func TestRegenerateKey(t *testing.T) {
 	ctx := context.Background()
 	s := testDB(t)
 
-	tenant, _ := s.CreateTenant(ctx, "app", "")
+	tenant, _ := s.CreateTenant(ctx, "app", "", nil)
 	oldKey := tenant.APIKey
 
 	newKey, err := s.RegenerateKey(ctx, tenant.ID)
@@ -107,12 +115,12 @@ func TestRegenerateKey(t *testing.T) {
 		t.Fatal("expected different key")
 	}
 
-	found, _ := s.LookupTenant(ctx, newKey)
+	found, _ := s.LookupTenantByKey(ctx, newKey)
 	if found == nil {
 		t.Fatal("expected to find tenant by new key")
 	}
 
-	foundOld, _ := s.LookupTenant(ctx, oldKey)
+	foundOld, _ := s.LookupTenantByKey(ctx, oldKey)
 	if foundOld != nil {
 		t.Fatal("expected old key to no longer work")
 	}
@@ -122,7 +130,7 @@ func TestDeleteTenant(t *testing.T) {
 	ctx := context.Background()
 	s := testDB(t)
 
-	tenant, _ := s.CreateTenant(ctx, "app", "")
+	tenant, _ := s.CreateTenant(ctx, "app", "", nil)
 	s.LogUsage(ctx, tenant.ID, "traces", 100, 200)
 	s.LogUsage(ctx, tenant.ID, "metrics", 200, 200)
 
@@ -138,11 +146,12 @@ func TestUsageData(t *testing.T) {
 	ctx := context.Background()
 	s := testDB(t)
 
-	tenant, _ := s.CreateTenant(ctx, "app", "")
-	s.LogUsage(ctx, tenant.ID, "traces", 1000, 200)
-	s.LogUsage(ctx, tenant.ID, "traces", 2000, 200)
-	s.LogUsage(ctx, tenant.ID, "metrics", 500, 200)
-	s.LogUsage(ctx, tenant.ID, "logs", 100, 200)
+	tenant, _ := s.CreateTenant(ctx, "app", "", nil)
+	s.RecordUsage(tenant.ID, "traces", 200, 1000)
+	s.RecordUsage(tenant.ID, "traces", 200, 2000)
+	s.RecordUsage(tenant.ID, "metrics", 200, 500)
+	s.RecordUsage(tenant.ID, "logs", 200, 100)
+	s.FlushCounters()
 
 	data, err := s.GetUsageData(ctx, tenant.ID, "7d")
 	if err != nil {
@@ -157,18 +166,24 @@ func TestCleanupOldLogs(t *testing.T) {
 	ctx := context.Background()
 	s := testDB(t)
 
-	tenant, _ := s.CreateTenant(ctx, "app", "")
-	// Insert usage then verify cleanup with 90-day retention does NOT delete recent data
-	s.LogUsage(ctx, tenant.ID, "traces", 100, 200)
+	tenant, _ := s.CreateTenant(ctx, "app", "", nil)
+	// usage_counters are the source of truth now; usage_logs keeps legacy rows.
+	// Insert a legacy row directly and verify CleanupOldLogs only touches usage_logs.
+	if _, err := s.db.ExecContext(ctx,
+		`INSERT INTO usage_logs (tenant_id, signal_type, byte_count, status_code) VALUES (?, 'traces', 100, 200)`,
+		tenant.ID); err != nil {
+		t.Fatalf("insert legacy usage: %v", err)
+	}
 
 	err := s.CleanupOldLogs(ctx, 90)
 	if err != nil {
 		t.Fatalf("cleanup: %v", err)
 	}
 
-	data, _ := s.GetUsageData(ctx, tenant.ID, "7d")
-	if len(data.SignalTypes) == 0 {
-		t.Fatal("expected data preserved with 90-day retention")
+	var legacyCount int
+	s.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM usage_logs WHERE tenant_id = ?`, tenant.ID).Scan(&legacyCount)
+	if legacyCount != 1 {
+		t.Fatalf("expected legacy usage_logs row preserved, got %d", legacyCount)
 	}
 
 	// Cleanup with 36500 days (~100 years) also preserves data
@@ -176,8 +191,712 @@ func TestCleanupOldLogs(t *testing.T) {
 	if err != nil {
 		t.Fatalf("cleanup: %v", err)
 	}
-	data, _ = s.GetUsageData(ctx, tenant.ID, "7d")
-	if len(data.SignalTypes) == 0 {
-		t.Fatal("expected data preserved")
+	s.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM usage_logs WHERE tenant_id = ?`, tenant.ID).Scan(&legacyCount)
+	if legacyCount != 1 {
+		t.Fatalf("expected legacy usage_logs row preserved, got %d", legacyCount)
+	}
+}
+
+func TestOnDeleteCascade(t *testing.T) {
+	ctx := context.Background()
+	s := testDB(t)
+
+	tenant, _ := s.CreateTenant(ctx, "cascade-test", "", nil)
+	s.LogUsage(ctx, tenant.ID, "traces", 100, 200)
+	s.LogUsage(ctx, tenant.ID, "metrics", 200, 200)
+
+	// Verify usage exists before delete
+	var beforeCount int
+	s.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM usage_logs WHERE tenant_id = ?`, tenant.ID).Scan(&beforeCount)
+	if beforeCount != 2 {
+		t.Fatalf("expected 2 usage rows before delete, got %d", beforeCount)
+	}
+
+	s.DeleteTenant(ctx, tenant.ID)
+
+	var afterCount int
+	s.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM usage_logs WHERE tenant_id = ?`, tenant.ID).Scan(&afterCount)
+	if afterCount != 0 {
+		t.Fatalf("ON DELETE CASCADE failed: expected 0 usage rows after delete, got %d", afterCount)
+	}
+}
+
+func TestAPIKeyFormat(t *testing.T) {
+	key := GenerateAPIKeyV2(42)
+	if !strings.HasPrefix(key, "ing_42_") {
+		t.Fatalf("expected prefix ing_42_, got %q", key)
+	}
+	secret := key[7:] // "ing_42_" is 7 chars
+	if len(secret) != 48 {
+		t.Fatalf("expected 48 hex chars, got %d", len(secret))
+	}
+	if _, err := hex.DecodeString(secret); err != nil {
+		t.Fatalf("secret part must be hex: %v", err)
+	}
+}
+
+func TestAPIKeyHashAndLookup(t *testing.T) {
+	ctx := context.Background()
+	s := testDB(t)
+
+	tenant, _ := s.CreateTenant(ctx, "hash-app", "", nil)
+
+	// Wrong key fails
+	wrong, err := s.LookupTenantByKey(ctx, "ing_"+strconv.FormatInt(tenant.ID, 10)+"_deadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeef")
+	if err != nil {
+		t.Fatalf("lookup wrong: %v", err)
+	}
+	if wrong != nil {
+		t.Fatal("expected nil for wrong key")
+	}
+
+	// Correct key succeeds
+	good, err := s.LookupTenantByKey(ctx, tenant.APIKey)
+	if err != nil {
+		t.Fatalf("lookup good: %v", err)
+	}
+	if good == nil || good.ID != tenant.ID {
+		t.Fatal("expected to find tenant by correct key")
+	}
+}
+
+func TestAPIKeyRevoked(t *testing.T) {
+	ctx := context.Background()
+	s := testDB(t)
+
+	tenant, _ := s.CreateTenant(ctx, "revoke-app", "", nil)
+	oldKey := tenant.APIKey
+
+	if _, err := s.RegenerateKey(ctx, tenant.ID); err != nil {
+		t.Fatalf("regenerate: %v", err)
+	}
+
+	found, _ := s.LookupTenantByKey(ctx, oldKey)
+	if found != nil {
+		t.Fatal("expected old key to be revoked")
+	}
+
+	// New key still works after regenerate
+	newFound, _ := s.LookupTenantByKey(ctx, tenant.APIKey)
+	if newFound != nil {
+		t.Fatal("expected OLD tenant.APIKey (pre-regenerate) to fail")
+	}
+}
+
+func TestAPIKeyMigration(t *testing.T) {
+	ctx := context.Background()
+	s := testDB(t)
+
+	// Seed a tenant the old way: direct INSERT with plaintext api_key
+	oldKey := "deadbeefdeadbeefdeadbeefdeadbeef"
+	_, err := s.db.ExecContext(ctx,
+		`INSERT INTO tenants (name, api_key, active, description, created_at, updated_at)
+		 VALUES ('migration-test', ?, 1, '', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)`,
+		oldKey)
+	if err != nil {
+		t.Fatalf("insert old-style tenant: %v", err)
+	}
+
+	// Run migration manually
+	if err := migratePlaintextKeys(s.db); err != nil {
+		t.Fatalf("migration: %v", err)
+	}
+
+	// Verify old key still authenticates
+	tenant, err := s.LookupTenantByKey(ctx, oldKey)
+	if err != nil {
+		t.Fatalf("lookup after migration: %v", err)
+	}
+	if tenant == nil {
+		t.Fatal("expected old key to work after migration")
+	}
+	if tenant.Name != "migration-test" {
+		t.Fatalf("expected 'migration-test', got %q", tenant.Name)
+	}
+
+	// Verify tenants.api_key is now empty/NULL
+	var apiKey string
+	s.db.QueryRowContext(ctx, `SELECT COALESCE(api_key, '') FROM tenants WHERE id = ?`, tenant.ID).Scan(&apiKey)
+	if apiKey != "" {
+		t.Fatalf("expected empty api_key after migration, got %q", apiKey)
+	}
+}
+
+func TestMalformedKeyNoQuery(t *testing.T) {
+	ctx := context.Background()
+	s := testDB(t)
+
+	malformed := []string{
+		"not-a-key",
+		"",
+		"ing_",
+		"ing_abc_1234",
+		"ing_1_short",
+		"ing_1_zzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzz", // non-hex
+		"ING_1_000000000000000000000000000000000000000000000000", // uppercase prefix
+	}
+	for _, k := range malformed {
+		found, err := s.LookupTenantByKey(ctx, k)
+		if err != nil {
+			t.Fatalf("lookup %q: %v", k, err)
+		}
+		if found != nil {
+			t.Fatalf("expected nil for malformed key %q", k)
+		}
+	}
+}
+
+func TestAPIKeyNoPlaintextInDB(t *testing.T) {
+	ctx := context.Background()
+	s := testDB(t)
+
+	tenant, _ := s.CreateTenant(ctx, "no-plaintext", "", nil)
+	var apiKey string
+	s.db.QueryRowContext(ctx, `SELECT COALESCE(api_key, '') FROM tenants WHERE id = ?`, tenant.ID).Scan(&apiKey)
+	if apiKey != "" {
+		t.Fatalf("expected empty tenants.api_key after create, got %q", apiKey)
+	}
+
+	if _, err := s.RegenerateKey(ctx, tenant.ID); err != nil {
+		t.Fatalf("regenerate: %v", err)
+	}
+	s.db.QueryRowContext(ctx, `SELECT COALESCE(api_key, '') FROM tenants WHERE id = ?`, tenant.ID).Scan(&apiKey)
+	if apiKey != "" {
+		t.Fatalf("expected empty tenants.api_key after regenerate, got %q", apiKey)
+	}
+
+	// Also verify no plaintext hash stored in api_keys.key_hash
+	var hash string
+	s.db.QueryRowContext(ctx, `SELECT key_hash FROM api_keys WHERE tenant_id = ? LIMIT 1`, tenant.ID).Scan(&hash)
+	if strings.Contains(hash, tenant.APIKey) {
+		t.Fatal("key_hash must not contain plaintext key")
+	}
+}
+
+func TestUsageWriterBasic(t *testing.T) {
+	ctx := context.Background()
+	s := testDB(t)
+
+	tenant, _ := s.CreateTenant(ctx, "writer-test", "", nil)
+
+	// Record 5 samples: 3 traces (1 error), 2 metrics (0 errors)
+	s.RecordUsage(tenant.ID, "traces", 200, 100)
+	s.RecordUsage(tenant.ID, "traces", 500, 200) // error
+	s.RecordUsage(tenant.ID, "traces", 200, 300)
+	s.RecordUsage(tenant.ID, "metrics", 200, 50)
+	s.RecordUsage(tenant.ID, "metrics", 200, 75)
+
+	s.FlushCounters()
+
+	req, bytes, errs, err := s.CounterTotals(ctx, tenant.ID)
+	if err != nil {
+		t.Fatalf("counter totals: %v", err)
+	}
+	if req != 5 {
+		t.Fatalf("expected 5 requests, got %d", req)
+	}
+	if bytes != 725 {
+		t.Fatalf("expected 725 bytes (100+200+300+50+75), got %d", bytes)
+	}
+	if errs != 1 {
+		t.Fatalf("expected 1 error, got %d", errs)
+	}
+
+	// Verify GetUsageData still works
+	data, err := s.GetUsageData(ctx, tenant.ID, "7d")
+	if err != nil {
+		t.Fatalf("get usage: %v", err)
+	}
+	if len(data.SignalTypes) != 2 {
+		t.Fatalf("expected 2 signal types, got %d", len(data.SignalTypes))
+	}
+}
+
+func TestUsageWriterBulk(t *testing.T) {
+	ctx := context.Background()
+	s := testDB(t)
+
+	tenant, _ := s.CreateTenant(ctx, "bulk-test", "", nil)
+
+	const n = 10000
+	var expectBytes int64
+	for i := 0; i < n; i++ {
+		signalType := "traces"
+		if i%3 == 0 {
+			signalType = "metrics"
+		} else if i%5 == 0 {
+			signalType = "logs"
+		}
+		sc := 200
+		if i%10 == 0 {
+			sc = 500
+		}
+		bc := int64(100 + i%900)
+		expectBytes += bc
+		s.RecordUsage(tenant.ID, signalType, sc, bc)
+	}
+
+	s.FlushCounters()
+
+	req, bytes, errs, err := s.CounterTotals(ctx, tenant.ID)
+	if err != nil {
+		t.Fatalf("counter totals: %v", err)
+	}
+	if req != n {
+		t.Fatalf("expected %d requests, got %d", n, req)
+	}
+	if bytes != expectBytes {
+		t.Fatalf("expected %d bytes, got %d", expectBytes, bytes)
+	}
+	if errs != n/10 {
+		t.Fatalf("expected %d errors (i%%10==0), got %d", n/10, errs)
+	}
+}
+
+func TestUsageWriterChannelFull(t *testing.T) {
+	// Bare writer with no consumer goroutine: the channel fills and excess
+	// samples must be dropped instead of blocking.
+	w := &UsageWriter{ch: make(chan counterSample, 4096)}
+
+	const over = 100
+	for i := 0; i < 4096+over; i++ {
+		w.record(counterSample{tenantID: 1, signalType: "traces", hourBucket: "h", requests: 1, bytes: 1})
+	}
+
+	dropped := atomic.LoadInt64(&w.dropped)
+	if dropped == 0 {
+		t.Fatal("expected some dropped samples when channel overflows")
+	}
+	if dropped < over {
+		t.Fatalf("expected >= %d dropped, got %d", over, dropped)
+	}
+}
+
+func TestUsageWriterGoroutineExit(t *testing.T) {
+	path := t.TempDir() + "/goroutine-test.db"
+	s, err := Open(path)
+	if err != nil {
+		t.Fatalf("open: %v", err)
+	}
+
+	tenant, _ := s.CreateTenant(t.Context(), "goroutine-test", "", nil)
+	s.RecordUsage(tenant.ID, "traces", 200, 100)
+
+	// Close should block until writer flushes and exits
+	s.Close()
+	// Reaching here means the writer goroutine stopped cleanly.
+}
+
+func TestUsageWriterShutdownFlush(t *testing.T) {
+	path := t.TempDir() + "/shutdown-flush.db"
+	s, err := Open(path)
+	if err != nil {
+		t.Fatalf("open: %v", err)
+	}
+
+	tenant, _ := s.CreateTenant(t.Context(), "shutdown-flush", "", nil)
+	const n = 5000
+	for i := 0; i < n; i++ {
+		s.RecordUsage(tenant.ID, "traces", 200, 10)
+	}
+
+	// Close flushes everything (Stop drains + flushes)
+	s.Close()
+
+	// Reopen and verify all samples flushed
+	s2, err := Open(path)
+	if err != nil {
+		t.Fatalf("reopen: %v", err)
+	}
+	defer s2.Close()
+	req, _, _, err := s2.CounterTotals(t.Context(), tenant.ID)
+	if err != nil {
+		t.Fatalf("counter totals: %v", err)
+	}
+	if req != n {
+		t.Fatalf("expected %d requests after shutdown flush, got %d", n, req)
+	}
+}
+
+func TestOnDeleteCascadeCounters(t *testing.T) {
+	ctx := context.Background()
+	s := testDB(t)
+
+	tenant, _ := s.CreateTenant(ctx, "cascade-counter", "", nil)
+	s.RecordUsage(tenant.ID, "traces", 200, 100)
+	s.FlushCounters()
+
+	var cnt int
+	s.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM usage_counters WHERE tenant_id = ?`, tenant.ID).Scan(&cnt)
+	if cnt == 0 {
+		t.Fatal("expected counter rows before delete")
+	}
+
+	s.DeleteTenant(ctx, tenant.ID)
+
+	s.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM usage_counters WHERE tenant_id = ?`, tenant.ID).Scan(&cnt)
+	if cnt != 0 {
+		t.Fatalf("ON DELETE CASCADE failed: expected 0 counter rows, got %d", cnt)
+	}
+}
+
+func TestGetUsageDataFromCounters(t *testing.T) {
+	ctx := context.Background()
+	s := testDB(t)
+
+	tenant, _ := s.CreateTenant(ctx, "counters-usage", "", nil)
+	// Insert counter rows directly across multiple hour buckets
+	_, err := s.db.ExecContext(ctx, `
+		INSERT INTO usage_counters (tenant_id, signal_type, hour_bucket, requests, bytes, errors) VALUES
+		(?, 'traces', strftime('%Y-%m-%dT%H','now','-2 hours'), 10, 1000, 1),
+		(?, 'traces', strftime('%Y-%m-%dT%H','now','-1 hours'), 5, 500, 0),
+		(?, 'metrics', strftime('%Y-%m-%dT%H','now','-1 hours'), 3, 300, 0),
+		(?, 'logs',    strftime('%Y-%m-%dT%H','now','-3 hours'), 7, 700, 2)`,
+		tenant.ID, tenant.ID, tenant.ID, tenant.ID)
+	if err != nil {
+		t.Fatalf("insert counters: %v", err)
+	}
+
+	data, err := s.GetUsageData(ctx, tenant.ID, "24h")
+	if err != nil {
+		t.Fatalf("usage: %v", err)
+	}
+	if len(data.SignalTypes) != 3 {
+		t.Fatalf("expected 3 signal types, got %d", len(data.SignalTypes))
+	}
+	var totalRequests int64
+	for _, b := range data.Requests {
+		totalRequests += b.Count
+	}
+	if totalRequests != 25 {
+		t.Fatalf("expected 25 total requests, got %d", totalRequests)
+	}
+}
+
+func TestTenantRateLimitColumns(t *testing.T) {
+	ctx := context.Background()
+	s := testDB(t)
+
+	rps := int64(10)
+	burst := int64(5000)
+	quota := int64(1048576) // 1 MB
+	tenant, err := s.CreateTenant(ctx, "limits-app", "with limits", &RateLimitParams{
+		RateLimitRPS:   &rps,
+		BurstBytes:     &burst,
+		DailyByteQuota: &quota,
+	})
+	if err != nil {
+		t.Fatalf("create: %v", err)
+	}
+
+	// Read back via LookupTenantByID
+	found, err := s.LookupTenantByID(ctx, tenant.ID)
+	if err != nil {
+		t.Fatalf("lookup: %v", err)
+	}
+	if found.RateLimitRPS == nil || *found.RateLimitRPS != 10 {
+		t.Fatalf("expected rps 10, got %v", found.RateLimitRPS)
+	}
+	if found.BurstBytes == nil || *found.BurstBytes != 5000 {
+		t.Fatalf("expected burst 5000, got %v", found.BurstBytes)
+	}
+	if found.DailyByteQuota == nil || *found.DailyByteQuota != 1048576 {
+		t.Fatalf("expected quota 1048576, got %v", found.DailyByteQuota)
+	}
+
+	// Update limits
+	newRps := int64(50)
+	newQuota := int64(2097152)
+	if err := s.UpdateTenant(ctx, tenant.ID, "limits-app", "updated", true, &RateLimitParams{
+		RateLimitRPS:   &newRps,
+		DailyByteQuota: &newQuota,
+	}); err != nil {
+		t.Fatalf("update: %v", err)
+	}
+	found, _ = s.LookupTenantByID(ctx, tenant.ID)
+	if found.RateLimitRPS == nil || *found.RateLimitRPS != 50 {
+		t.Fatalf("expected rps 50 after update, got %v", found.RateLimitRPS)
+	}
+	if found.BurstBytes != nil {
+		t.Fatalf("expected burst cleared (nil) after update, got %v", *found.BurstBytes)
+	}
+	if found.DailyByteQuota == nil || *found.DailyByteQuota != 2097152 {
+		t.Fatalf("expected quota 2097152 after update, got %v", found.DailyByteQuota)
+	}
+
+	// Create without limits → NULL
+	noLimits, _ := s.CreateTenant(ctx, "no-limits", "", nil)
+	found, _ = s.LookupTenantByID(ctx, noLimits.ID)
+	if found.RateLimitRPS != nil || found.BurstBytes != nil || found.DailyByteQuota != nil {
+		t.Fatal("expected nil limits for tenant created without limits")
+	}
+}
+
+func TestGetDailyByteUsage(t *testing.T) {
+	ctx := context.Background()
+	s := testDB(t)
+	tenant, _ := s.CreateTenant(ctx, "qtest", "usage-by-day", nil)
+
+	// Insert 300 bytes for today
+	s.RecordUsage(tenant.ID, "traces", 200, 100)
+	s.RecordUsage(tenant.ID, "traces", 200, 200)
+	s.FlushCounters()
+
+	used, err := s.GetDailyByteUsage(ctx, tenant.ID)
+	if err != nil {
+		t.Fatalf("GetDailyByteUsage: %v", err)
+	}
+	if used != 300 {
+		t.Fatalf("expected 300 bytes today, got %d", used)
+	}
+}
+
+func TestAddAndLookupCertificate(t *testing.T) {
+	ctx := context.Background()
+	s := testDB(t)
+	tenant, _ := s.CreateTenant(ctx, "cert-app", "", nil)
+
+	fp := "abcdef1234567890abcdef"
+	_, err := s.AddCertificate(ctx, tenant.ID, "12345", fp, "client-1", time.Now(), time.Now().Add(24*time.Hour))
+	if err != nil {
+		t.Fatalf("add cert: %v", err)
+	}
+
+	// Lookup by fingerprint → tenant
+	found, err := s.LookupTenantByFingerprint(ctx, fp)
+	if err != nil {
+		t.Fatalf("lookup: %v", err)
+	}
+	if found == nil || found.ID != tenant.ID {
+		t.Fatalf("expected tenant %d, got %+v", tenant.ID, found)
+	}
+
+	// Unknown fingerprint → nil
+	unknown, _ := s.LookupTenantByFingerprint(ctx, "ffffffffffffffffffffffff")
+	if unknown != nil {
+		t.Fatal("expected nil for unknown fingerprint")
+	}
+}
+
+func TestRevokedCertificate(t *testing.T) {
+	ctx := context.Background()
+	s := testDB(t)
+	tenant, _ := s.CreateTenant(ctx, "revoked-app", "", nil)
+
+	fp := "feedbeef1234567890abcd"
+	s.AddCertificate(ctx, tenant.ID, "99", fp, "client-1", time.Now(), time.Now().Add(24*time.Hour))
+	if err := s.RevokeCertificate(ctx, fp); err != nil {
+		t.Fatalf("revoke: %v", err)
+	}
+
+	found, _ := s.LookupTenantByFingerprint(ctx, fp)
+	if found != nil {
+		t.Fatal("expected nil for revoked cert")
+	}
+}
+
+func TestInactiveTenantWithCert(t *testing.T) {
+	ctx := context.Background()
+	s := testDB(t)
+	tenant, _ := s.CreateTenant(ctx, "inactive-app", "", nil)
+
+	fp := "inactive0000000000000000"
+	s.AddCertificate(ctx, tenant.ID, "1", fp, "client-1", time.Now(), time.Now().Add(24*time.Hour))
+	if err := s.UpdateTenant(ctx, tenant.ID, "inactive-app", "", false, nil); err != nil {
+		t.Fatalf("deactivate: %v", err)
+	}
+
+	found, _ := s.LookupTenantByFingerprint(ctx, fp)
+	if found != nil {
+		t.Fatal("expected nil for inactive tenant cert")
+	}
+}
+
+func TestCertificateLastSeen(t *testing.T) {
+	ctx := context.Background()
+	s := testDB(t)
+	tenant, _ := s.CreateTenant(ctx, "seen-app", "", nil)
+
+	fp := "seen00000000000000000000"
+	s.AddCertificate(ctx, tenant.ID, "2", fp, "client-1", time.Now(), time.Now().Add(24*time.Hour))
+
+	if err := s.UpdateLastSeen(ctx, fp); err != nil {
+		t.Fatalf("update last seen: %v", err)
+	}
+
+	cert, err := s.LookupCertificateByFingerprint(ctx, fp)
+	if err != nil {
+		t.Fatalf("lookup cert: %v", err)
+	}
+	if cert == nil || !cert.LastSeenAt.Valid {
+		t.Fatal("expected last_seen_at to be set")
+	}
+}
+
+func TestDeleteCertificateByTenantCascade(t *testing.T) {
+	ctx := context.Background()
+	s := testDB(t)
+	tenant, _ := s.CreateTenant(ctx, "cascade-cert", "", nil)
+
+	fp := "cascade00000000000000000"
+	s.AddCertificate(ctx, tenant.ID, "3", fp, "client-1", time.Now(), time.Now().Add(24*time.Hour))
+
+	if err := s.DeleteTenant(ctx, tenant.ID); err != nil {
+		t.Fatalf("delete tenant: %v", err)
+	}
+
+	cert, _ := s.LookupCertificateByFingerprint(ctx, fp)
+	if cert != nil {
+		t.Fatal("expected cert row deleted via cascade")
+	}
+}
+
+func TestMigrateRebuildPreservesRateColumns(t *testing.T) {
+	path := t.TempDir() + "/rebuild-test.db"
+
+	// Create a DB with the legacy UNIQUE schema + rate columns (simulating a
+	// pre-migration DB that has gone through the ALTER TABLE rate column adds
+	// but not yet the UNIQUE removal).
+	db, err := Open(path)
+	if err != nil {
+		t.Fatalf("open: %v", err)
+	}
+	db.Close()
+
+	// Reopen with raw SQL to force the legacy schema
+	s, err := Open(path)
+	if err != nil {
+		t.Fatalf("open: %v", err)
+	}
+	defer s.Close()
+
+	ctx := context.Background()
+
+	// Insert a tenant with all rate columns set
+	rps := int64(100)
+	burst := int64(50000)
+	quota := int64(10485760) // 10 MB
+	tenant, err := s.CreateTenant(ctx, "rebuild-preserve", "test", &RateLimitParams{
+		RateLimitRPS:   &rps,
+		BurstBytes:     &burst,
+		DailyByteQuota: &quota,
+	})
+	if err != nil {
+		t.Fatalf("create tenant: %v", err)
+	}
+
+	// Read back — rate columns must survive
+	found, err := s.LookupTenantByID(ctx, tenant.ID)
+	if err != nil {
+		t.Fatalf("lookup: %v", err)
+	}
+	if found.RateLimitRPS == nil || *found.RateLimitRPS != 100 {
+		t.Fatalf("rate_limit_rps lost during schema set-up: %v", found.RateLimitRPS)
+	}
+	if found.BurstBytes == nil || *found.BurstBytes != 50000 {
+		t.Fatalf("burst_bytes lost: %v", found.BurstBytes)
+	}
+	if found.DailyByteQuota == nil || *found.DailyByteQuota != 10485760 {
+		t.Fatalf("daily_byte_quota lost: %v", found.DailyByteQuota)
+	}
+}
+
+func TestMigrateIdempotent(t *testing.T) {
+	path := t.TempDir() + "/migrate-idempotent.db"
+
+	s, err := Open(path)
+	if err != nil {
+		t.Fatalf("first open: %v", err)
+	}
+
+	ctx := context.Background()
+
+	// Create a tenant with limits
+	rps := int64(50)
+	_, err = s.CreateTenant(ctx, "idempotent-app", "", &RateLimitParams{RateLimitRPS: &rps})
+	if err != nil {
+		t.Fatalf("create: %v", err)
+	}
+	s.Close()
+
+	// Reopen — migrate() runs again but should be idempotent
+	s2, err := Open(path)
+	if err != nil {
+		t.Fatalf("second open: %v", err)
+	}
+	defer s2.Close()
+
+	tenants, err := s2.ListTenants(ctx)
+	if err != nil {
+		t.Fatalf("list: %v", err)
+	}
+	if len(tenants) != 1 {
+		t.Fatalf("expected 1 tenant after reopen, got %d", len(tenants))
+	}
+	if tenants[0].RateLimitRPS == nil || *tenants[0].RateLimitRPS != 50 {
+		t.Fatalf("rate_limit_rps lost during idempotent migration: %v", tenants[0].RateLimitRPS)
+	}
+}
+
+func TestExpiringCertificates(t *testing.T) {
+	ctx := context.Background()
+	s := testDB(t)
+	tenant, _ := s.CreateTenant(ctx, "expiry-tenant", "", nil)
+
+	// Cert expiring in 1 hour
+	_, err := s.AddCertificate(ctx, tenant.ID, "1", "exp1", "cn-exp1",
+		time.Now().Add(-24*time.Hour), time.Now().Add(1*time.Hour))
+	if err != nil {
+		t.Fatalf("add cert 1: %v", err)
+	}
+
+	// Cert expiring in 10 days (outside the 7-day window)
+	_, err = s.AddCertificate(ctx, tenant.ID, "2", "exp2", "cn-exp2",
+		time.Now().Add(-24*time.Hour), time.Now().Add(240*time.Hour))
+	if err != nil {
+		t.Fatalf("add cert 2: %v", err)
+	}
+
+	// Cert already expired
+	_, err = s.AddCertificate(ctx, tenant.ID, "3", "exp3", "cn-exp3",
+		time.Now().Add(-48*time.Hour), time.Now().Add(-1*time.Hour))
+	if err != nil {
+		t.Fatalf("add cert 3: %v", err)
+	}
+
+	// ListExpiringCertificates within 168h (7 days)
+	expiring, err := s.ListExpiringCertificates(ctx, 168)
+	if err != nil {
+		t.Fatalf("list expiring: %v", err)
+	}
+	// Cert1 (1h) and Cert3 (already expired) should appear; Cert2 (10d) should not
+	if len(expiring) != 2 {
+		t.Fatalf("expected 2 expiring certs (1h + expired), got %d", len(expiring))
+	}
+
+	// ExpiringCertsByTenant
+	m, err := s.ExpiringCertsByTenant(ctx, 168)
+	if err != nil {
+		t.Fatalf("expiring by tenant: %v", err)
+	}
+	if m[tenant.ID] != 2 {
+		t.Fatalf("expected county=2 for tenant, got %d", m[tenant.ID])
+	}
+}
+
+func TestListCertificates(t *testing.T) {
+	ctx := context.Background()
+	s := testDB(t)
+	tenant, _ := s.CreateTenant(ctx, "list-cert", "", nil)
+
+	s.AddCertificate(ctx, tenant.ID, "1", "aaa00000000000000000000", "c1", time.Now(), time.Now().Add(24*time.Hour))
+	s.AddCertificate(ctx, tenant.ID, "2", "bbb00000000000000000000", "c2", time.Now(), time.Now().Add(24*time.Hour))
+
+	certs, err := s.ListCertificates(ctx, tenant.ID)
+	if err != nil {
+		t.Fatalf("list: %v", err)
+	}
+	if len(certs) != 2 {
+		t.Fatalf("expected 2 certs, got %d", len(certs))
 	}
 }

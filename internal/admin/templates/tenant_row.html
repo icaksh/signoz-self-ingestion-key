@@ -1,29 +1,58 @@
 {{define "tenant_row"}}
-<tr id="tenant-{{.ID}}" class="hover:bg-gray-800/50 transition-colors group">
-    <td class="px-6 py-4 text-sm font-medium text-white">{{.Name}}</td>
-    <td class="px-6 py-4 text-sm font-mono text-gray-400">
-        {{maskKey .APIKey}}
-        <span id="kf-{{.ID}}" class="hidden">{{.APIKey}}</span>
-        <button onclick="copyKey('{{.APIKey}}')" class="ml-1 rounded px-2 py-0.5 text-xs bg-gray-700 text-gray-300 hover:bg-gray-600 transition-colors">
-            Copy
-        </button>
+{{if .Tenant.APIKey}}
+<tr class="key-reveal-row" id="key-reveal-{{.Tenant.ID}}">
+    <td colspan="5" class="px-6 py-4">
+        <div class="key-reveal">
+            <div class="key-reveal-title">API key created &mdash; copy it now</div>
+            <div class="key-reveal-warning">This key is shown once. It will not be displayed again. Store it somewhere safe.</div>
+            <div class="key-reveal-code">{{.Tenant.APIKey}}</div>
+            <div class="key-reveal-actions">
+                <button onclick="copyKey('{{.Tenant.APIKey}}')" class="btn btn-success btn-sm" type="button">Copy to clipboard</button>
+                <button onclick="this.closest('.key-reveal-row').remove()" class="btn btn-ghost btn-sm" type="button">I have saved this key</button>
+            </div>
+        </div>
     </td>
-    <td class="px-6 py-4">
-        {{if .Active}}
-        <span class="inline-flex items-center rounded-full bg-emerald-500/10 px-2 py-0.5 text-xs font-medium text-emerald-400 ring-1 ring-inset ring-emerald-500/20">Active</span>
+</tr>
+{{end}}
+<tr id="tenant-{{.Tenant.ID}}">
+    <td>
+        <div class="font-semibold">{{.Tenant.Name}}</div>
+        {{if .Tenant.Description}}<div class="text-xs text-secondary">{{.Tenant.Description}}</div>{{end}}
+    </td>
+    <td>
+        <div class="key-prefix">{{.Tenant.KeyPrefix}}</div>
+        <div class="mt-1 text-xs text-secondary">
+            {{if .Tenant.RateLimitRPS}}{{megaBytes .Tenant.RateLimitRPS}} rps{{else}}unlimited{{end}}
+            {{if .Tenant.BurstBytes}}&middot; {{megaBytes .Tenant.BurstBytes}} MB/s burst{{end}}
+            {{if .Tenant.DailyByteQuota}}&middot; {{megaBytes .Tenant.DailyByteQuota}} MB/day{{end}}
+        </div>
+    </td>
+    <td class="text-nowrap">
+        {{if .ExpiringCount}}
+        <span class="badge badge-warning badge-xs">{{.ExpiringCount}} expiring</span>
         {{else}}
-        <span class="inline-flex items-center rounded-full bg-red-500/10 px-2 py-0.5 text-xs font-medium text-red-400 ring-1 ring-inset ring-red-500/20">Inactive</span>
+        <span class="text-xs text-secondary">&mdash;</span>
         {{end}}
     </td>
-    <td class="px-6 py-4">
-        <div class="flex items-center gap-2">
-            <a href="/tenants/{{.ID}}/usage" class="rounded-lg px-3 py-1.5 text-xs font-medium text-gray-300 hover:bg-gray-700 transition-colors">Usage</a>
-            <button hx-get="/tenants/{{.ID}}/edit" hx-target="#form-area" hx-swap="innerHTML"
-                class="rounded-lg px-3 py-1.5 text-xs font-medium text-gray-300 hover:bg-gray-700 transition-colors">Edit</button>
-            <button hx-post="/tenants/{{.ID}}/regenerate" hx-target="#tenant-{{.ID}}" hx-swap="outerHTML" hx-confirm="Revoke old key and generate a new one?"
-                class="rounded-lg px-3 py-1.5 text-xs font-medium text-amber-400 hover:bg-amber-500/10 transition-colors">Revoke Key</button>
-            <button hx-delete="/tenants/{{.ID}}" hx-target="#tenant-{{.ID}}" hx-swap="outerHTML" hx-confirm="Delete this tenant permanently?"
-                class="rounded-lg px-3 py-1.5 text-xs font-medium text-red-400 hover:bg-red-500/10 transition-colors">Delete</button>
+    <td>
+        {{if .Tenant.Active}}
+        <span class="badge badge-success">Active</span>
+        {{else}}
+        <span class="badge badge-danger">Inactive</span>
+        {{end}}
+    </td>
+    <td>
+        <div class="flex items-center justify-end gap-1 flex-wrap">
+            <a href="/tenants/{{.Tenant.ID}}/usage" class="btn btn-ghost btn-sm">Usage</a>
+            <a href="/tenants/{{.Tenant.ID}}/certificates" class="btn btn-ghost btn-sm">Certs</a>
+            <button hx-get="/tenants/{{.Tenant.ID}}/edit" hx-target="#form-area" hx-swap="innerHTML"
+                class="btn btn-ghost btn-sm">Edit</button>
+            <button hx-post="/tenants/{{.Tenant.ID}}/regenerate" hx-target="#tenant-{{.Tenant.ID}}" hx-swap="outerHTML"
+                hx-confirm="true" data-confirm-name="API key for {{.Tenant.Name}}"
+                class="btn btn-ghost btn-sm" style="color:var(--warning)">Revoke Key</button>
+            <button hx-delete="/tenants/{{.Tenant.ID}}" hx-target="#tenant-{{.Tenant.ID}}" hx-swap="outerHTML"
+                hx-confirm="true" data-confirm-name="tenant {{.Tenant.Name}}"
+                class="btn btn-ghost btn-sm" style="color:var(--danger)">Delete</button>
         </div>
     </td>
 </tr>

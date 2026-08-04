@@ -1,0 +1,55 @@
+{{define "cert_list"}}
+{{template "base" .}}
+<div class="mb-6 flex items-center justify-between">
+    <div>
+        <h1 class="text-xl font-bold">Certificates: {{.Content.Tenant.Name}}</h1>
+        <a href="/" class="text-sm text-secondary hover:text-accent transition-colors">&larr; Back to tenants</a>
+    </div>
+    {{if .Content.CAEnabled}}
+    <a href="/tenants/{{.Content.Tenant.ID}}/certificates/new" class="btn btn-primary btn-sm">Issue Certificate</a>
+    {{end}}
+</div>
+{{if not .Content.CAEnabled}}
+<div class="alert alert-info mb-4">
+    CA integration is disabled &mdash; certificate issuance and renewal are unavailable.
+    Set <code>CA_ENABLED=true</code> plus the <code>CA_*</code> variables to enable it.
+</div>
+{{end}}
+<div id="form-area"></div>
+{{if .Content.Certificates}}
+<div class="card">
+    <div class="overflow-x-auto">
+        <table>
+            <thead>
+                <tr>
+                    <th>Fingerprint</th>
+                    <th>Serial</th>
+                    <th>Subject CN</th>
+                    <th>Expires</th>
+                    <th>Status</th>
+                    <th>Last Seen</th>
+                    <th class="text-right">Actions</th>
+                </tr>
+            </thead>
+            <tbody id="cert-list">
+                {{range .Content.Certificates}}
+                    {{template "cert_row" (certRowData . $.Content.Tenant.ID $.Content.ExpiryWarnDays $.Content.CAEnabled)}}
+                {{end}}
+            </tbody>
+        </table>
+    </div>
+</div>
+{{else}}
+<div class="card">
+    <div class="empty-state">
+        <div class="empty-state-icon">&#x1f510;</div>
+        <div class="empty-state-title">No certificates issued</div>
+        <div class="empty-state-text">Issue a client certificate to enable syslog ingestion for this tenant.</div>
+        {{if .Content.CAEnabled}}
+        <a href="/tenants/{{.Content.Tenant.ID}}/certificates/new" class="btn btn-primary">Issue Certificate</a>
+        {{end}}
+    </div>
+</div>
+{{end}}
+{{template "base_end" .}}
+{{end}}

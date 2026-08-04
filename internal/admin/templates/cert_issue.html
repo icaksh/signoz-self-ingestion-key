@@ -1,0 +1,51 @@
+{{define "cert_issue"}}
+{{template "base" .}}
+<div class="mb-6">
+    <h1 class="text-xl font-bold">Issue Certificate: {{.Content.Tenant.Name}}</h1>
+    <a href="/tenants/{{.Content.Tenant.ID}}/certificates" class="text-sm text-secondary hover:text-accent transition-colors">&larr; Back to certificates</a>
+</div>
+
+{{if not .Content.CAEnabled}}
+<div class="alert alert-info mb-4">
+    CA integration is disabled. Certificate issuance requires <code>CA_ENABLED=true</code> and <code>CA_*</code> environment variables.
+</div>
+{{end}}
+
+<div id="download-link"></div>
+
+<div class="card mb-6">
+    <div class="card-header">
+        <span class="font-semibold">Submit CSR (preferred)</span>
+    </div>
+    <div class="card-body">
+        <p class="text-sm text-secondary mb-4">
+            Paste a PEM-encoded Certificate Signing Request. Use <code>openssl req</code> or a similar
+            tool to generate the keypair and CSR on the device.
+        </p>
+        <form hx-post="/tenants/{{.Content.Tenant.ID}}/certificates" hx-target="#cert-list" hx-swap="beforeend">
+            <div class="mb-3">
+                <textarea name="csr" rows="6" placeholder="-----BEGIN CERTIFICATE REQUEST-----
+...
+-----END CERTIFICATE REQUEST-----" required></textarea>
+            </div>
+            <button type="submit" class="btn btn-primary">Issue Certificate</button>
+        </form>
+    </div>
+</div>
+
+<div class="card">
+    <div class="card-header">
+        <span class="font-semibold">Server-side key generation</span>
+    </div>
+    <div class="card-body">
+        <p class="text-sm text-secondary mb-4">
+            Generate a keypair server-side. The private key is available for one-time download after issuance.
+            Use this when you cannot generate keys on the target device.
+        </p>
+        <button hx-post="/tenants/{{.Content.Tenant.ID}}/certificates/keygen"
+            hx-target="#download-link" hx-swap="innerHTML"
+            class="btn btn-primary">Generate Keypair &amp; Issue</button>
+    </div>
+</div>
+{{template "base_end" .}}
+{{end}}

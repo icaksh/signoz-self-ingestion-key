@@ -1,12 +1,14 @@
 package admin
 
 import (
-	"embed"
 	"crypto/hmac"
 	"crypto/sha256"
+	"embed"
 	"encoding/base64"
 	"encoding/json"
+	"fmt"
 	"html/template"
+	"io/fs"
 	"log"
 	"net/http"
 	"strings"
@@ -14,31 +16,59 @@ import (
 
 	"golang.org/x/crypto/bcrypt"
 
+	"github.com/sismedika/otlp-proxy/internal/ca"
+	"github.com/sismedika/otlp-proxy/internal/ratelimit"
 	"github.com/sismedika/otlp-proxy/internal/store"
 )
 
 //go:embed templates/*.html
 var templateFS embed.FS
 
+//go:embed static/*
+var staticFS embed.FS
+
 type Server struct {
-	store *store.Store
-	tmpl  *template.Template
-	h     *Handlers
+	store        *store.Store
+	tmpl         *template.Template
+	h            *Handlers
+	limiter      *ratelimit.Limiter
+	signingKey   []byte
+	cookieSecure bool
+	loginLimiter *LoginLimiter
 }
 
-func NewServer(st *store.Store, addr string) *http.Server {
+func NewServer(st *store.Store, addr string, signingKey []byte, cookieSecure bool, caClient *ca.Client, dl *ca.DownloadManager, caExternalHostname string, caSyslogPort int, certLifetime time.Duration, lim *ratelimit.Limiter) *http.Server {
 	funcMap := template.FuncMap{
-		"maskKey": maskKey,
+		"maskKey":           maskKey,
+		"megaBytes":         megaBytes,
+		"percent":           percentOf,
+		"certRowData":       certRowData,
+		"formatTime":        formatTime,
+		"expired":           expired,
+		"expiringSoon":      expiringSoon,
+		"daysUntil":         daysUntil,
+		"fingerprintFormat": fingerprintFormat,
+		"fingerprintShort":  fingerprintShort,
+		"dict":              dict,
 	}
 
 	tmpl := template.Must(template.New("").Funcs(funcMap).ParseFS(templateFS, "templates/*.html"))
 
-	h := NewHandlers(st, tmpl)
-	s := &Server{store: st, tmpl: tmpl, h: h}
+	h := NewHandlers(st, tmpl, caClient, dl, caExternalHostname, caSyslogPort, certLifetime)
+	s := &Server{store: st, tmpl: tmpl, h: h, limiter: lim, signingKey: signingKey, cookieSecure: cookieSecure, loginLimiter: NewLoginLimiter()}
 
 	mux := http.NewServeMux()
 
+	// static assets — use fs.Sub to strip the "static" directory from embed paths
+	staticSub, err := fs.Sub(staticFS, "static")
+	if err != nil {
+		log.Fatalf("static embed: %v", err)
+	}
+	staticHandler := http.FileServer(http.FS(staticSub))
+	mux.Handle("GET /static/", http.StripPrefix("/static/", staticHandler))
+
 	// public
+	mux.HandleFunc("GET /healthz", s.healthz)
 	mux.HandleFunc("GET /login", s.loginPage)
 	mux.HandleFunc("POST /login", s.loginAction)
 	mux.HandleFunc("GET /setup", s.setupPage)
@@ -54,6 +84,16 @@ func NewServer(st *store.Store, addr string) *http.Server {
 	mux.HandleFunc("POST /tenants/{id}/regenerate", s.requireAuth(h.RegenerateKey))
 	mux.HandleFunc("GET /tenants/{id}/usage", s.requireAuth(h.UsagePage))
 	mux.HandleFunc("GET /tenants/{id}/usage/data", s.requireAuth(h.UsageData))
+	mux.HandleFunc("GET /tenants/{id}/quota", s.requireAuth(h.QuotaFragment))
+	mux.HandleFunc("GET /tenants/{id}/certificates", s.requireAuth(h.CertificatesPage))
+	mux.HandleFunc("GET /tenants/{id}/certificates/new", s.requireAuth(h.CertificateIssueForm))
+	mux.HandleFunc("POST /tenants/{id}/certificates", s.requireAuth(h.CertificateIssue))
+	mux.HandleFunc("POST /tenants/{id}/certificates/keygen", s.requireAuth(h.CertificateIssueWithKeygen))
+	mux.HandleFunc("POST /tenants/{id}/certificates/{certId}/renew", s.requireAuth(h.CertificateRenew))
+	mux.HandleFunc("POST /tenants/{id}/certificates/{certId}/revoke", s.requireAuth(h.CertificateRevoke))
+	mux.HandleFunc("GET /tenants/{id}/certificates/{certId}/download", s.requireAuth(h.CertificateDownload))
+	// Public — no auth, single-use token
+	mux.HandleFunc("GET /api/certificates/{token}/download", h.DownloadByToken)
 	mux.HandleFunc("GET /tenants/cancel", s.requireAuth(h.CancelForm))
 	mux.HandleFunc("GET /users", s.requireAuth(h.UsersPage))
 	mux.HandleFunc("POST /users", s.requireAuth(h.CreateUser))
@@ -73,13 +113,120 @@ func loggingMiddleware(next http.Handler) http.Handler {
 	})
 }
 
-// --- auth ---
+// megaBytes converts bytes to a human-friendly MB value (1 MB = 1048576 B).
+func megaBytes(v any) float64 {
+	switch n := v.(type) {
+	case int64:
+		return float64(n) / 1048576
+	case *int64:
+		if n != nil {
+			return float64(*n) / 1048576
+		}
+	}
+	return 0
+}
 
-var signingKey = []byte("change-me-in-production")
+// percentOf returns the percentage of used/quota, clamped to [0, 100].
+func percentOf(used, quota int64) int {
+	if quota <= 0 {
+		return 0
+	}
+	pct := int(used * 100 / quota)
+	if pct > 100 {
+		pct = 100
+	}
+	if pct < 0 {
+		pct = 0
+	}
+	return pct
+}
+
+// --- certificate template helpers ---
+
+func certRowData(cert store.Certificate, tenantID int64, warnDays int, caEnabled bool) CertRowData {
+	return CertRowData{Certificate: cert, TenantID: tenantID, ExpiryWarnDays: warnDays, CAEnabled: caEnabled}
+}
+
+func formatTime(t time.Time) string {
+	return t.UTC().Format("2006-01-02")
+}
+
+func expired(t time.Time) bool {
+	return time.Now().After(t)
+}
+
+func expiringSoon(t time.Time, warnDays int) bool {
+	return !time.Now().After(t) && time.Now().Add(time.Duration(warnDays)*24*time.Hour).After(t)
+}
+
+func daysUntil(t time.Time) int {
+	return int(time.Until(t).Hours() / 24)
+}
+
+// dict creates a map from alternating key-value pairs for use in template
+// pipelines. Usage: {{template "x" (dict "K1" V1 "K2" V2)}}
+func dict(values ...any) (map[string]any, error) {
+	if len(values)%2 != 0 {
+		return nil, fmt.Errorf("dict: odd number of arguments")
+	}
+	m := make(map[string]any, len(values)/2)
+	for i := 0; i < len(values); i += 2 {
+		key, ok := values[i].(string)
+		if !ok {
+			return nil, fmt.Errorf("dict: key at position %d is not a string", i)
+		}
+		m[key] = values[i+1]
+	}
+	return m, nil
+}
+
+// fingerprintFormat groups a hex fingerprint into 4-char blocks separated by
+// spaces for easier visual comparison (e.g. "aaaa bbbb cccc dddd").
+func fingerprintFormat(s string) string {
+	s = strings.TrimSpace(s)
+	if len(s) == 0 {
+		return s
+	}
+	var b strings.Builder
+	for i, c := range s {
+		if i > 0 && i%4 == 0 {
+			b.WriteByte(' ')
+		}
+		b.WriteRune(c)
+	}
+	return b.String()
+}
+
+// fingerprintShort returns the first 8 chars + ellipsis for compact display.
+func fingerprintShort(s string) string {
+	s = strings.TrimSpace(s)
+	if len(s) <= 12 {
+		return s
+	}
+	return s[:8] + "\u2026"
+}
+
+func (s *Server) healthz(w http.ResponseWriter, r *http.Request) {
+	qf := int64(0)
+	if s.limiter != nil {
+		qf = s.limiter.QuotaFailures()
+	}
+	if err := s.store.Ping(r.Context()); err != nil {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusServiceUnavailable)
+		fmt.Fprintf(w, `{"status":"unhealthy","quota_failures":%d}`, qf)
+		return
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusOK)
+	fmt.Fprintf(w, `{"status":"ok","quota_failures":%d}`, qf)
+}
+
+// --- auth ---
 
 func (s *Server) makeToken(userID int64, username string) string {
 	payload, _ := json.Marshal(map[string]any{"id": userID, "u": username, "exp": time.Now().Add(24 * time.Hour).Unix()})
-	mac := hmac.New(sha256.New, signingKey)
+	mac := hmac.New(sha256.New, s.signingKey)
 	mac.Write(payload)
 	sig := mac.Sum(nil)
 	return base64.RawURLEncoding.EncodeToString(payload) + "." + base64.RawURLEncoding.EncodeToString(sig)
@@ -98,7 +245,7 @@ func (s *Server) verifyToken(cookie string) (int64, string, bool) {
 	if err != nil {
 		return 0, "", false
 	}
-	mac := hmac.New(sha256.New, signingKey)
+	mac := hmac.New(sha256.New, s.signingKey)
 	mac.Write(payload)
 	if !hmac.Equal(mac.Sum(nil), sig) {
 		return 0, "", false
@@ -138,26 +285,53 @@ func (s *Server) loginPage(w http.ResponseWriter, r *http.Request) {
 		http.Redirect(w, r, "/setup", http.StatusSeeOther)
 		return
 	}
-	s.tmpl.ExecuteTemplate(w, "login", nil)
+	if err := s.tmpl.ExecuteTemplate(w, "login", map[string]any{"Content": nil, "ExpiringCerts": 0}); err != nil {
+		log.Printf("[admin] template error: %v", err)
+	}
 }
+
+// dummyHash is a valid bcrypt hash used to make login timing constant even
+// when the username does not exist.
+var dummyHash = []byte("$2a$10$tSjm/ToHuip7KGgiUuwwBOfyw1q1bdg.hpm2ziKRNY0Zj4MaBbBR6")
 
 func (s *Server) loginAction(w http.ResponseWriter, r *http.Request) {
 	username := r.FormValue("username")
 	password := r.FormValue("password")
 
+	clientIP := r.RemoteAddr
+	if fwd := r.Header.Get("X-Forwarded-For"); fwd != "" {
+		clientIP = strings.SplitN(fwd, ",", 2)[0]
+	}
+
+	ipKey := "ip:" + clientIP
+	userKey := "user:" + username
+
+	if !s.loginLimiter.Allow(ipKey) || !s.loginLimiter.Allow(userKey) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusTooManyRequests)
+		w.Write([]byte(`{"error":"too many attempts"}`))
+		return
+	}
+
 	id, hash, err := s.store.GetUserByUsername(r.Context(), username)
 	if err != nil || id == 0 {
-		http.Error(w, "invalid credentials", http.StatusUnauthorized)
+		// Constant-time: always run a bcrypt comparison against a dummy hash
+		bcrypt.CompareHashAndPassword(dummyHash, []byte(password))
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusUnauthorized)
+		w.Write([]byte(`{"error":"invalid credentials"}`))
 		return
 	}
 	if bcrypt.CompareHashAndPassword([]byte(hash), []byte(password)) != nil {
-		http.Error(w, "invalid credentials", http.StatusUnauthorized)
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusUnauthorized)
+		w.Write([]byte(`{"error":"invalid credentials"}`))
 		return
 	}
 	token := s.makeToken(id, username)
 	http.SetCookie(w, &http.Cookie{
 		Name: "session", Value: token, Path: "/",
-		HttpOnly: true, SameSite: http.SameSiteStrictMode,
+		HttpOnly: true, Secure: s.cookieSecure, SameSite: http.SameSiteStrictMode,
 		MaxAge: 86400,
 	})
 	http.Redirect(w, r, "/", http.StatusSeeOther)
@@ -169,7 +343,9 @@ func (s *Server) setupPage(w http.ResponseWriter, r *http.Request) {
 		http.Redirect(w, r, "/login", http.StatusSeeOther)
 		return
 	}
-	s.tmpl.ExecuteTemplate(w, "setup", nil)
+	if err := s.tmpl.ExecuteTemplate(w, "setup", map[string]any{"Content": nil, "ExpiringCerts": 0}); err != nil {
+		log.Printf("[admin] template error: %v", err)
+	}
 }
 
 func (s *Server) setupAction(w http.ResponseWriter, r *http.Request) {
@@ -184,7 +360,16 @@ func (s *Server) setupAction(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "username and password required", http.StatusBadRequest)
 		return
 	}
-	hash, _ := bcrypt.GenerateFromPassword([]byte(password), bcrypt.DefaultCost)
+	if len(password) < 12 {
+		http.Error(w, "password must be at least 12 characters", http.StatusBadRequest)
+		return
+	}
+	hash, err := bcrypt.GenerateFromPassword([]byte(password), bcrypt.DefaultCost)
+	if err != nil {
+		log.Printf("[admin] bcrypt error: %v", err)
+		http.Error(w, "internal error", http.StatusInternalServerError)
+		return
+	}
 	if err := s.store.CreateUser(r.Context(), username, string(hash)); err != nil {
 		http.Error(w, "create user failed", http.StatusInternalServerError)
 		return
@@ -193,7 +378,7 @@ func (s *Server) setupAction(w http.ResponseWriter, r *http.Request) {
 	token := s.makeToken(id, username)
 	http.SetCookie(w, &http.Cookie{
 		Name: "session", Value: token, Path: "/",
-		HttpOnly: true, SameSite: http.SameSiteStrictMode,
+		HttpOnly: true, Secure: s.cookieSecure, SameSite: http.SameSiteStrictMode,
 		MaxAge: 86400,
 	})
 	http.Redirect(w, r, "/", http.StatusSeeOther)

@@ -3,22 +3,40 @@ package store
 import (
 	"context"
 	"crypto/rand"
+	"crypto/sha256"
+	"crypto/subtle"
 	"database/sql"
 	"encoding/hex"
 	"fmt"
+	"log"
+	"strconv"
+	"strings"
+	"sync"
+	"sync/atomic"
 	"time"
 
 	_ "modernc.org/sqlite"
 )
 
 type Tenant struct {
-	ID          int64
-	Name        string
-	APIKey      string
-	Active      bool
-	Description string
-	CreatedAt   time.Time
-	UpdatedAt   time.Time
+	ID             int64
+	Name           string
+	APIKey         string
+	KeyPrefix      string
+	Active         bool
+	Description    string
+	RateLimitRPS   *int64 // nil = unlimited
+	BurstBytes     *int64 // nil = unlimited
+	DailyByteQuota *int64 // nil = unlimited
+	CreatedAt      time.Time
+	UpdatedAt      time.Time
+}
+
+// RateLimitParams carries optional per-tenant rate limits; nil fields = unlimited.
+type RateLimitParams struct {
+	RateLimitRPS   *int64
+	BurstBytes     *int64
+	DailyByteQuota *int64
 }
 
 type User struct {
@@ -43,11 +61,12 @@ type SignalBucket struct {
 }
 
 type Store struct {
-	db *sql.DB
+	db     *sql.DB
+	writer *UsageWriter
 }
 
 func Open(path string) (*Store, error) {
-	db, err := sql.Open("sqlite", path+"?_journal_mode=WAL&_foreign_keys=on")
+	db, err := sql.Open("sqlite", path+"?_pragma=journal_mode(WAL)&_pragma=foreign_keys(1)&_pragma=busy_timeout(5000)")
 	if err != nil {
 		return nil, fmt.Errorf("open db: %w", err)
 	}
@@ -60,11 +79,257 @@ func Open(path string) (*Store, error) {
 		return nil, err
 	}
 
-	return &Store{db: db}, nil
+	// Verify critical pragmas
+	var journalMode, foreignKeys string
+	_ = db.QueryRow("PRAGMA journal_mode").Scan(&journalMode)
+	_ = db.QueryRow("PRAGMA foreign_keys").Scan(&foreignKeys)
+	log.Printf("[store] sqlite pragmas: journal_mode=%s foreign_keys=%s", journalMode, foreignKeys)
+
+	writer := NewUsageWriter(db)
+	writer.Start()
+
+	return &Store{db: db, writer: writer}, nil
 }
 
 func (s *Store) Close() error {
+	if s.writer != nil {
+		s.writer.Stop()
+	}
 	return s.db.Close()
+}
+
+func (s *Store) Ping(ctx context.Context) error {
+	return s.db.PingContext(ctx)
+}
+
+// counterKey is the composite key for hourly usage aggregation.
+type counterKey struct {
+	tenantID   int64
+	signalType string
+	hourBucket string
+}
+
+// counterSample is a single usage event sent through the channel.
+type counterSample struct {
+	tenantID   int64
+	signalType string
+	hourBucket string
+	requests   int64
+	bytes      int64
+	isError    bool
+}
+
+// counterAccum holds in-memory aggregates before flush.
+type counterAccum struct {
+	requests int64
+	bytes    int64
+	errors   int64
+}
+
+// UsageWriter aggregates per-request usage samples and flushes them to
+// usage_counters every 10s or on shutdown. The channel is bounded so a slow
+// DB can never unboundedly grow memory — excess samples are dropped and
+// counted in DroppedSamples. All channel reads happen on the single writer
+// goroutine; flushNow coordinates a synchronous flush through it so a
+// concurrent flush can never race an in-flight sample handoff.
+type UsageWriter struct {
+	db       *sql.DB
+	ch       chan counterSample
+	flushReq chan chan struct{}
+	mu       sync.Mutex
+	accum    map[counterKey]*counterAccum
+	dropped  int64
+	done     chan struct{}
+	flushed  chan struct{}
+	stopOnce sync.Once
+}
+
+func NewUsageWriter(db *sql.DB) *UsageWriter {
+	return &UsageWriter{
+		db:       db,
+		ch:       make(chan counterSample, 4096),
+		flushReq: make(chan chan struct{}),
+		accum:    make(map[counterKey]*counterAccum),
+	}
+}
+
+func (w *UsageWriter) Start() {
+	w.done = make(chan struct{})
+	w.flushed = make(chan struct{})
+	go func() {
+		defer close(w.flushed)
+		ticker := time.NewTicker(10 * time.Second)
+		defer ticker.Stop()
+		for {
+			select {
+			case s := <-w.ch:
+				w.accumulate(s)
+			case done := <-w.flushReq:
+				w.drain()
+				w.flush()
+				close(done)
+			case <-ticker.C:
+				w.flush()
+			case <-w.done:
+				w.drain()
+				w.flush()
+				return
+			}
+		}
+	}()
+}
+
+func (w *UsageWriter) Stop() {
+	w.stopOnce.Do(func() {
+		close(w.done)
+		<-w.flushed
+	})
+}
+
+func (w *UsageWriter) accumulate(s counterSample) {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	key := counterKey{tenantID: s.tenantID, signalType: s.signalType, hourBucket: s.hourBucket}
+	acc, ok := w.accum[key]
+	if !ok {
+		acc = &counterAccum{}
+		w.accum[key] = acc
+	}
+	acc.requests += s.requests
+	acc.bytes += s.bytes
+	if s.isError {
+		acc.errors++
+	}
+}
+
+func (w *UsageWriter) drain() {
+	for {
+		select {
+		case s := <-w.ch:
+			w.accumulate(s)
+		default:
+			return
+		}
+	}
+}
+
+func (w *UsageWriter) flush() {
+	w.mu.Lock()
+	snapshot := w.accum
+	w.accum = make(map[counterKey]*counterAccum)
+	w.mu.Unlock()
+
+	if len(snapshot) == 0 {
+		return
+	}
+
+	// On any failure after the snapshot is taken, merge it back so no
+	// samples are lost; a later flush will retry.
+	restore := func() {
+		w.mu.Lock()
+		defer w.mu.Unlock()
+		for k, v := range snapshot {
+			acc := w.accum[k]
+			if acc == nil {
+				acc = &counterAccum{}
+				w.accum[k] = acc
+			}
+			acc.requests += v.requests
+			acc.bytes += v.bytes
+			acc.errors += v.errors
+		}
+	}
+
+	tx, err := w.db.Begin()
+	if err != nil {
+		log.Printf("[store] flush begin tx: %v", err)
+		restore()
+		return
+	}
+
+	stmt, err := tx.Prepare(`
+		INSERT INTO usage_counters (tenant_id, signal_type, hour_bucket, requests, bytes, errors)
+		VALUES (?, ?, ?, ?, ?, ?)
+		ON CONFLICT(tenant_id, signal_type, hour_bucket) DO UPDATE SET
+			requests = requests + excluded.requests,
+			bytes    = bytes    + excluded.bytes,
+			errors   = errors   + excluded.errors
+	`)
+	if err != nil {
+		tx.Rollback()
+		log.Printf("[store] flush prepare: %v", err)
+		restore()
+		return
+	}
+
+	for key, acc := range snapshot {
+		if _, err := stmt.Exec(key.tenantID, key.signalType, key.hourBucket, acc.requests, acc.bytes, acc.errors); err != nil {
+			stmt.Close()
+			tx.Rollback()
+			log.Printf("[store] flush exec: %v", err)
+			restore()
+			return
+		}
+	}
+	stmt.Close()
+
+	if err := tx.Commit(); err != nil {
+		log.Printf("[store] flush commit: %v", err)
+		restore()
+		return
+	}
+}
+
+// record enqueues one sample. Never blocks: if the bounded channel is full
+// the sample is dropped (counted in DroppedSamples).
+func (w *UsageWriter) record(s counterSample) {
+	select {
+	case w.ch <- s:
+	default:
+		atomic.AddInt64(&w.dropped, 1)
+	}
+}
+
+// RecordUsage enqueues one usage sample. Never blocks: if the bounded channel
+// is full the sample is dropped (counted in DroppedSamples).
+func (s *Store) RecordUsage(tenantID int64, signalType string, statusCode int, byteCount int64) {
+	hourBucket := time.Now().UTC().Format("2006-01-02T15")
+	isErr := statusCode >= 400
+	sample := counterSample{
+		tenantID:   tenantID,
+		signalType: signalType,
+		hourBucket: hourBucket,
+		requests:   1,
+		bytes:      byteCount,
+		isError:    isErr,
+	}
+	s.writer.record(sample)
+}
+
+func (s *Store) DroppedSamples() int64 {
+	return atomic.LoadInt64(&s.writer.dropped)
+}
+
+// FlushCounters triggers an immediate synchronous flush of in-memory usage
+// counters via the writer goroutine. Exposed for testing.
+func (s *Store) FlushCounters() {
+	select {
+	case <-s.writer.done:
+		return // already stopped — Stop() drained and flushed
+	default:
+	}
+	done := make(chan struct{})
+	s.writer.flushReq <- done
+	<-done
+}
+
+// CounterTotals returns aggregate totals across all counter rows for a tenant.
+func (s *Store) CounterTotals(ctx context.Context, tenantID int64) (requests, bytes, errors int64, err error) {
+	err = s.db.QueryRowContext(ctx,
+		`SELECT COALESCE(SUM(requests),0), COALESCE(SUM(bytes),0), COALESCE(SUM(errors),0)
+		 FROM usage_counters WHERE tenant_id = ?`,
+		tenantID).Scan(&requests, &bytes, &errors)
+	return
 }
 
 func migrate(db *sql.DB) error {
@@ -79,7 +344,7 @@ func migrate(db *sql.DB) error {
 	CREATE TABLE IF NOT EXISTS tenants (
 	    id          INTEGER PRIMARY KEY AUTOINCREMENT,
 	    name        TEXT NOT NULL,
-	    api_key     TEXT NOT NULL UNIQUE,
+	    api_key     TEXT NOT NULL DEFAULT '',
 	    active      INTEGER NOT NULL DEFAULT 1,
 	    description TEXT NOT NULL DEFAULT '',
 	    created_at  DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
@@ -99,16 +364,214 @@ func migrate(db *sql.DB) error {
 
 	CREATE INDEX IF NOT EXISTS idx_usage_tenant_time ON usage_logs(tenant_id, created_at);
 	CREATE INDEX IF NOT EXISTS idx_usage_created ON usage_logs(created_at);
+
+	CREATE TABLE IF NOT EXISTS certificates (
+	    id                 INTEGER PRIMARY KEY AUTOINCREMENT,
+	    tenant_id          INTEGER NOT NULL REFERENCES tenants(id) ON DELETE CASCADE,
+	    serial_number      TEXT    NOT NULL,
+	    fingerprint_sha256 TEXT    NOT NULL UNIQUE,
+	    subject_cn         TEXT    NOT NULL,
+	    not_before         DATETIME,
+	    not_after          DATETIME,
+	    revoked_at         DATETIME,
+	    created_at         DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+	    last_seen_at       DATETIME
+	);
+
+	CREATE INDEX IF NOT EXISTS idx_certificates_fingerprint ON certificates(fingerprint_sha256);
+	CREATE INDEX IF NOT EXISTS idx_certificates_tenant ON certificates(tenant_id);
+
+	CREATE TABLE IF NOT EXISTS usage_counters (
+	    tenant_id   INTEGER NOT NULL REFERENCES tenants(id) ON DELETE CASCADE,
+	    signal_type TEXT    NOT NULL,
+	    hour_bucket TEXT    NOT NULL,
+	    requests    INTEGER NOT NULL DEFAULT 0,
+	    bytes       INTEGER NOT NULL DEFAULT 0,
+	    errors      INTEGER NOT NULL DEFAULT 0,
+	    PRIMARY KEY (tenant_id, signal_type, hour_bucket)
+	);
+
+	CREATE TABLE IF NOT EXISTS api_keys (
+	    id           INTEGER PRIMARY KEY AUTOINCREMENT,
+	    tenant_id    INTEGER NOT NULL REFERENCES tenants(id) ON DELETE CASCADE,
+	    key_hash     TEXT NOT NULL,
+	    key_prefix   TEXT NOT NULL,
+	    enabled      INTEGER NOT NULL DEFAULT 1,
+	    created_at   DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+	    last_used_at DATETIME,
+	    revoked_at   DATETIME
+	);
+
+	CREATE INDEX IF NOT EXISTS idx_api_keys_tenant ON api_keys(tenant_id);
+	CREATE UNIQUE INDEX IF NOT EXISTS idx_api_keys_hash ON api_keys(key_hash);
 	`
-	_, err := db.Exec(schema)
-	return err
+	if _, err := db.Exec(schema); err != nil {
+		return err
+	}
+
+	// Rate-limiting columns (additive; ignore "duplicate column" errors)
+	for _, s := range []string{
+		"ALTER TABLE tenants ADD COLUMN rate_limit_rps INTEGER",
+		"ALTER TABLE tenants ADD COLUMN burst_bytes INTEGER",
+		"ALTER TABLE tenants ADD COLUMN daily_byte_quota INTEGER",
+	} {
+		_, _ = db.Exec(s) // best-effort — fails harmlessly if column exists
+	}
+
+	if err := ensureTenantSchema(db); err != nil {
+		return err
+	}
+	return migratePlaintextKeys(db)
 }
 
+// ensureTenantSchema rebuilds the tenants table if it still carries the legacy
+// UNIQUE constraint on api_key. Multiple tenants must be able to store the
+// empty placeholder string (real keys live in the api_keys table now).
+//
+// The rebuild runs in a single transaction so a crash mid-rebuild cannot drop
+// the original tenants table without committing the replacement. Rate-limit
+// columns (rate_limit_rps, burst_bytes, daily_byte_quota) are preserved in the
+// rebuilt table.
+func ensureTenantSchema(db *sql.DB) error {
+	var sqlText string
+	err := db.QueryRow(`SELECT sql FROM sqlite_master WHERE type='table' AND name='tenants'`).Scan(&sqlText)
+	if err == sql.ErrNoRows {
+		return nil // fresh DB — created by the new schema above
+	}
+	if err != nil {
+		return fmt.Errorf("read tenants schema: %w", err)
+	}
+	if !strings.Contains(sqlText, "UNIQUE") {
+		return nil // already rebuilt
+	}
+
+	// Verify PRAGMA foreign_keys is off BEFORE the transaction (SQLite
+	// forbids changing it inside a transaction).
+	var fkBefore string
+	_ = db.QueryRow("PRAGMA foreign_keys").Scan(&fkBefore)
+	if _, err := db.Exec(`PRAGMA foreign_keys=off`); err != nil {
+		return err
+	}
+
+	tx, err := db.Begin()
+	if err != nil {
+		return fmt.Errorf("rebuild begin tx: %w", err)
+	}
+	defer tx.Rollback()
+
+	steps := []string{
+		`CREATE TABLE tenants_rebuild (
+		    id               INTEGER PRIMARY KEY AUTOINCREMENT,
+		    name             TEXT NOT NULL,
+		    api_key          TEXT NOT NULL DEFAULT '',
+		    active           INTEGER NOT NULL DEFAULT 1,
+		    description      TEXT NOT NULL DEFAULT '',
+		    rate_limit_rps   INTEGER,
+		    burst_bytes      INTEGER,
+		    daily_byte_quota INTEGER,
+		    created_at       DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+		    updated_at       DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+		)`,
+		`INSERT INTO tenants_rebuild (id, name, api_key, active, description, rate_limit_rps, burst_bytes, daily_byte_quota, created_at, updated_at)
+		 SELECT id, name, api_key, active, description, rate_limit_rps, burst_bytes, daily_byte_quota, created_at, updated_at FROM tenants`,
+		`DROP TABLE tenants`,
+		`ALTER TABLE tenants_rebuild RENAME TO tenants`,
+		`CREATE INDEX IF NOT EXISTS idx_tenants_api_key ON tenants(api_key)`,
+	}
+	for _, stmt := range steps {
+		if _, err := tx.Exec(stmt); err != nil {
+			return fmt.Errorf("rebuild tenants table: %w", err)
+		}
+	}
+
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("rebuild commit: %w", err)
+	}
+
+	if _, err := db.Exec(`PRAGMA foreign_keys=on`); err != nil {
+		return err
+	}
+
+	var fkAfter string
+	_ = db.QueryRow("PRAGMA foreign_keys").Scan(&fkAfter)
+	log.Printf("[store] rebuilt tenants table (dropped legacy UNIQUE on api_key) pragma fk_before=%s fk_after=%s", fkBefore, fkAfter)
+	return nil
+}
+
+// migratePlaintextKeys moves any remaining plaintext tenants.api_key values
+// into the api_keys table (hashed), then blanks tenants.api_key. Idempotent:
+// rows with empty api_key are skipped.
+func migratePlaintextKeys(db *sql.DB) error {
+	rows, err := db.Query(`SELECT id, api_key FROM tenants WHERE api_key != ''`)
+	if err != nil {
+		return fmt.Errorf("migrate api_keys: %w", err)
+	}
+	defer rows.Close()
+
+	type row struct {
+		id     int64
+		apiKey string
+	}
+	var toMigrate []row
+	for rows.Next() {
+		var r row
+		if err := rows.Scan(&r.id, &r.apiKey); err != nil {
+			return err
+		}
+		toMigrate = append(toMigrate, r)
+	}
+	if err := rows.Err(); err != nil {
+		return err
+	}
+
+	for _, r := range toMigrate {
+		hash := sha256Hex(r.apiKey)
+		prefix := r.apiKey
+		if len(prefix) > 12 {
+			prefix = prefix[:12]
+		}
+		_, err := db.Exec(
+			`INSERT OR IGNORE INTO api_keys (tenant_id, key_hash, key_prefix, enabled, created_at)
+			 VALUES (?, ?, ?, 1, CURRENT_TIMESTAMP)`,
+			r.id, hash, prefix,
+		)
+		if err != nil {
+			return fmt.Errorf("migrate api_key for tenant %d: %w", r.id, err)
+		}
+		_, err = db.Exec(`UPDATE tenants SET api_key = '' WHERE id = ?`, r.id)
+		if err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// GenerateAPIKeyV2 returns a key of the form ing_<tenantID>_<48 hex chars>.
+func GenerateAPIKeyV2(tenantID int64) string {
+	b := make([]byte, 24)
+	if _, err := rand.Read(b); err != nil {
+		panic("crypto/rand failed: " + err.Error())
+	}
+	return "ing_" + strconv.FormatInt(tenantID, 10) + "_" + hex.EncodeToString(b)
+}
+
+func sha256Hex(s string) string {
+	h := sha256.Sum256([]byte(s))
+	return hex.EncodeToString(h[:])
+}
+
+// HashKey returns the hex-encoded SHA256 of a full key.
+func HashKey(fullKey string) string {
+	return sha256Hex(fullKey)
+}
+
+// LookupTenant (by plaintext api_key) is deprecated — kept for migration
+// compatibility. New code should use LookupTenantByKey.
 func (s *Store) LookupTenant(ctx context.Context, apiKey string) (*Tenant, error) {
 	t := &Tenant{}
 	var active int
 	err := s.db.QueryRowContext(ctx,
-		`SELECT id, name, api_key, active, description, created_at, updated_at
+		`SELECT id, name, COALESCE(api_key, ''), active, description, created_at, updated_at
 		 FROM tenants WHERE api_key = ? AND active = 1`, apiKey,
 	).Scan(&t.ID, &t.Name, &t.APIKey, &active, &t.Description, &t.CreatedAt, &t.UpdatedAt)
 	if err == sql.ErrNoRows {
@@ -121,27 +584,168 @@ func (s *Store) LookupTenant(ctx context.Context, apiKey string) (*Tenant, error
 	return t, nil
 }
 
-func (s *Store) LookupTenantByID(ctx context.Context, id int64) (*Tenant, error) {
+// LookupTenantByKey authenticates a full API key against the api_keys table.
+// Returns (nil, nil) for not-found, invalid, or rejected keys.
+func (s *Store) LookupTenantByKey(ctx context.Context, fullKey string) (*Tenant, error) {
+	if strings.HasPrefix(fullKey, "ing_") {
+		rest := fullKey[4:]
+		underscoreIdx := strings.IndexByte(rest, '_')
+		if underscoreIdx < 0 {
+			return nil, nil
+		}
+		tenantID, err := strconv.ParseInt(rest[:underscoreIdx], 10, 64)
+		if err != nil || tenantID <= 0 {
+			return nil, nil
+		}
+		secret := rest[underscoreIdx+1:]
+		if len(secret) != 48 || !isHex(secret) {
+			return nil, nil
+		}
+
+		keyHash := sha256Hex(fullKey)
+
+		rows, err := s.db.QueryContext(ctx,
+			`SELECT ak.key_hash, t.id, t.name, COALESCE(t.api_key, ''), t.active, t.description,
+			        t.rate_limit_rps, t.burst_bytes, t.daily_byte_quota, t.created_at, t.updated_at
+			 FROM api_keys ak JOIN tenants t ON ak.tenant_id = t.id
+			 WHERE ak.tenant_id = ? AND ak.enabled = 1 AND ak.revoked_at IS NULL AND t.active = 1`,
+			tenantID)
+		if err != nil {
+			return nil, err
+		}
+		return s.matchCandidates(ctx, rows, keyHash)
+	}
+
+	// Legacy path: pre-migration plaintext keys were 32 lowercase hex chars.
+	// After migration their SHA-256 lives in api_keys.key_hash — authenticate by
+	// exact hash (indexed, constant-time compare). Keys that don't match either
+	// format are rejected before any DB query.
+	if len(fullKey) != 32 || !isHex(fullKey) {
+		return nil, nil
+	}
+	keyHash := sha256Hex(fullKey)
+	rows, err := s.db.QueryContext(ctx,
+		`SELECT ak.key_hash, t.id, t.name, COALESCE(t.api_key, ''), t.active, t.description,
+		        t.rate_limit_rps, t.burst_bytes, t.daily_byte_quota, t.created_at, t.updated_at
+		 FROM api_keys ak JOIN tenants t ON ak.tenant_id = t.id
+		 WHERE ak.key_hash = ? AND ak.enabled = 1 AND ak.revoked_at IS NULL AND t.active = 1`,
+		keyHash)
+	if err != nil {
+		return nil, err
+	}
+	return s.matchCandidates(ctx, rows, keyHash)
+}
+
+func isHex(s string) bool {
+	for _, c := range s {
+		if !((c >= '0' && c <= '9') || (c >= 'a' && c <= 'f')) {
+			return false
+		}
+	}
+	return true
+}
+
+// matchCandidates compares the hashed key against candidate rows and returns
+// the matching tenant. Collects all rows before any follow-up query to avoid
+// deadlock under MaxOpenConns(1).
+func (s *Store) matchCandidates(ctx context.Context, rows *sql.Rows, keyHash string) (*Tenant, error) {
+	type candidate struct {
+		hash string
+		ten  Tenant
+	}
+	var candidates []candidate
+	for rows.Next() {
+		var hash string
+		var t Tenant
+		var active int
+		var rps, burst, quota sql.NullInt64
+		if err := rows.Scan(&hash, &t.ID, &t.Name, &t.APIKey, &active, &t.Description,
+			&rps, &burst, &quota, &t.CreatedAt, &t.UpdatedAt); err != nil {
+			rows.Close()
+			return nil, err
+		}
+		t.Active = active == 1
+		if rps.Valid {
+			t.RateLimitRPS = &rps.Int64
+		}
+		if burst.Valid {
+			t.BurstBytes = &burst.Int64
+		}
+		if quota.Valid {
+			t.DailyByteQuota = &quota.Int64
+		}
+		candidates = append(candidates, candidate{hash: hash, ten: t})
+	}
+	if err := rows.Err(); err != nil {
+		rows.Close()
+		return nil, err
+	}
+	rows.Close()
+
+	for _, c := range candidates {
+		if subtle.ConstantTimeCompare([]byte(c.hash), []byte(keyHash)) == 1 {
+			// Update last_used_at (best-effort, don't fail on error)
+			_, _ = s.db.ExecContext(ctx,
+				`UPDATE api_keys SET last_used_at = CURRENT_TIMESTAMP WHERE key_hash = ?`, c.hash)
+			return &c.ten, nil
+		}
+	}
+	return nil, nil
+}
+
+// CreateAPIKey inserts a new API key row for a tenant.
+func (s *Store) CreateAPIKey(ctx context.Context, tenantID int64, fullKey string, keyHash string, keyPrefix string) error {
+	_, err := s.db.ExecContext(ctx,
+		`INSERT INTO api_keys (tenant_id, key_hash, key_prefix) VALUES (?, ?, ?)`,
+		tenantID, keyHash, keyPrefix)
+	return err
+}
+
+// tenantSelect returns the column list plus the latest active key prefix.
+const tenantSelect = `
+	SELECT t.id, t.name, COALESCE(t.api_key, ''), t.active, t.description,
+	       t.rate_limit_rps, t.burst_bytes, t.daily_byte_quota, t.created_at, t.updated_at,
+	       COALESCE((SELECT ak.key_prefix FROM api_keys ak
+	                 WHERE ak.tenant_id = t.id AND ak.enabled = 1 AND ak.revoked_at IS NULL
+	                 ORDER BY ak.created_at DESC LIMIT 1), '') AS key_prefix`
+
+func scanTenant(scanner interface{ Scan(...any) error }) (*Tenant, error) {
 	t := &Tenant{}
 	var active int
-	err := s.db.QueryRowContext(ctx,
-		`SELECT id, name, api_key, active, description, created_at, updated_at
-		 FROM tenants WHERE id = ?`, id,
-	).Scan(&t.ID, &t.Name, &t.APIKey, &active, &t.Description, &t.CreatedAt, &t.UpdatedAt)
+	var rps, burst, quota sql.NullInt64
+	err := scanner.Scan(&t.ID, &t.Name, &t.APIKey, &active, &t.Description,
+		&rps, &burst, &quota, &t.CreatedAt, &t.UpdatedAt, &t.KeyPrefix)
+	if err != nil {
+		return nil, err
+	}
+	t.Active = active == 1
+	if rps.Valid {
+		t.RateLimitRPS = &rps.Int64
+	}
+	if burst.Valid {
+		t.BurstBytes = &burst.Int64
+	}
+	if quota.Valid {
+		t.DailyByteQuota = &quota.Int64
+	}
+	return t, nil
+}
+
+func (s *Store) LookupTenantByID(ctx context.Context, id int64) (*Tenant, error) {
+	t, err := scanTenant(s.db.QueryRowContext(ctx,
+		tenantSelect+` FROM tenants t WHERE t.id = ?`, id))
 	if err == sql.ErrNoRows {
 		return nil, nil
 	}
 	if err != nil {
 		return nil, err
 	}
-	t.Active = active == 1
 	return t, nil
 }
 
 func (s *Store) ListTenants(ctx context.Context) ([]Tenant, error) {
 	rows, err := s.db.QueryContext(ctx,
-		`SELECT id, name, api_key, active, description, created_at, updated_at
-		 FROM tenants ORDER BY created_at DESC`)
+		tenantSelect+` FROM tenants t ORDER BY t.created_at DESC`)
 	if err != nil {
 		return nil, err
 	}
@@ -149,13 +753,11 @@ func (s *Store) ListTenants(ctx context.Context) ([]Tenant, error) {
 
 	var tenants []Tenant
 	for rows.Next() {
-		var t Tenant
-		var active int
-		if err := rows.Scan(&t.ID, &t.Name, &t.APIKey, &active, &t.Description, &t.CreatedAt, &t.UpdatedAt); err != nil {
+		t, err := scanTenant(rows)
+		if err != nil {
 			return nil, err
 		}
-		t.Active = active == 1
-		tenants = append(tenants, t)
+		tenants = append(tenants, *t)
 	}
 	return tenants, rows.Err()
 }
@@ -168,38 +770,81 @@ func GenerateAPIKey() string {
 	return hex.EncodeToString(b)
 }
 
-func (s *Store) CreateTenant(ctx context.Context, name, description string) (*Tenant, error) {
-	apiKey := GenerateAPIKey()
+func (s *Store) CreateTenant(ctx context.Context, name, description string, limits *RateLimitParams) (*Tenant, error) {
+	if limits == nil {
+		limits = &RateLimitParams{}
+	}
 	now := time.Now()
 	res, err := s.db.ExecContext(ctx,
-		`INSERT INTO tenants (name, api_key, active, description, created_at, updated_at)
-		 VALUES (?, ?, 1, ?, ?, ?)`,
-		name, apiKey, description, now, now)
+		`INSERT INTO tenants (name, api_key, active, description, rate_limit_rps, burst_bytes, daily_byte_quota, created_at, updated_at)
+		 VALUES (?, '', 1, ?, ?, ?, ?, ?, ?)`,
+		name, description, limits.RateLimitRPS, limits.BurstBytes, limits.DailyByteQuota, now, now)
 	if err != nil {
 		return nil, fmt.Errorf("create tenant: %w", err)
 	}
 	id, _ := res.LastInsertId()
+
+	apiKey := GenerateAPIKeyV2(id)
+	keyHash := sha256Hex(apiKey)
+	keyPrefix := apiKey[:12]
+	_, err = s.db.ExecContext(ctx,
+		`INSERT INTO api_keys (tenant_id, key_hash, key_prefix) VALUES (?, ?, ?)`,
+		id, keyHash, keyPrefix)
+	if err != nil {
+		return nil, fmt.Errorf("create api_key: %w", err)
+	}
+
 	return &Tenant{
-		ID:          id,
-		Name:        name,
-		APIKey:      apiKey,
-		Active:      true,
-		Description: description,
-		CreatedAt:   now,
-		UpdatedAt:   now,
+		ID:             id,
+		Name:           name,
+		APIKey:         apiKey, // full plaintext — returned once for display
+		KeyPrefix:      keyPrefix,
+		Active:         true,
+		Description:    description,
+		RateLimitRPS:   limits.RateLimitRPS,
+		BurstBytes:     limits.BurstBytes,
+		DailyByteQuota: limits.DailyByteQuota,
+		CreatedAt:      now,
+		UpdatedAt:      now,
 	}, nil
 }
 
-func (s *Store) UpdateTenant(ctx context.Context, id int64, name, description string, active bool) error {
+func (s *Store) UpdateTenant(ctx context.Context, id int64, name, description string, active bool, limits *RateLimitParams) error {
+	if limits == nil {
+		limits = &RateLimitParams{}
+	}
 	activeInt := 0
 	if active {
 		activeInt = 1
 	}
 	_, err := s.db.ExecContext(ctx,
-		`UPDATE tenants SET name = ?, active = ?, description = ?, updated_at = CURRENT_TIMESTAMP
+		`UPDATE tenants SET name = ?, active = ?, description = ?, rate_limit_rps = ?, burst_bytes = ?, daily_byte_quota = ?, updated_at = CURRENT_TIMESTAMP
 		 WHERE id = ?`,
-		name, activeInt, description, id)
+		name, activeInt, description, limits.RateLimitRPS, limits.BurstBytes, limits.DailyByteQuota, id)
 	return err
+}
+
+// GetDailyByteUsage returns total bytes recorded for the tenant in the current
+// UTC day.
+func (s *Store) GetDailyByteUsage(ctx context.Context, tenantID int64) (int64, error) {
+	todayPrefix := utcDayPrefix()
+	var total sql.NullInt64
+	err := s.db.QueryRowContext(ctx,
+		`SELECT SUM(bytes) FROM usage_counters
+		 WHERE tenant_id = ? AND hour_bucket >= ?`,
+		tenantID, todayPrefix+"T00",
+	).Scan(&total)
+	if err != nil {
+		return 0, err
+	}
+	if total.Valid {
+		return total.Int64, nil
+	}
+	return 0, nil
+}
+
+func utcDayPrefix() string {
+	return time.Now().UTC().Format("2006-01-02")
 }
 
 func (s *Store) DeleteTenant(ctx context.Context, id int64) error {
@@ -208,10 +853,19 @@ func (s *Store) DeleteTenant(ctx context.Context, id int64) error {
 }
 
 func (s *Store) RegenerateKey(ctx context.Context, id int64) (string, error) {
-	apiKey := GenerateAPIKey()
+	// Revoke all active keys for this tenant
 	_, err := s.db.ExecContext(ctx,
-		`UPDATE tenants SET api_key = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?`,
-		apiKey, id)
+		`UPDATE api_keys SET revoked_at = CURRENT_TIMESTAMP WHERE tenant_id = ? AND revoked_at IS NULL`, id)
+	if err != nil {
+		return "", err
+	}
+
+	apiKey := GenerateAPIKeyV2(id)
+	keyHash := sha256Hex(apiKey)
+	keyPrefix := apiKey[:12]
+	_, err = s.db.ExecContext(ctx,
+		`INSERT INTO api_keys (tenant_id, key_hash, key_prefix) VALUES (?, ?, ?)`,
+		id, keyHash, keyPrefix)
 	if err != nil {
 		return "", err
 	}
@@ -238,7 +892,7 @@ func (s *Store) GetUsageData(ctx context.Context, tenantID int64, rng string) (*
 		hours = 168
 	}
 
-	since := time.Now().Add(-time.Duration(hours) * time.Hour)
+	since := time.Now().UTC().Add(-time.Duration(hours) * time.Hour).Format("2006-01-02T15")
 
 	requests, err := s.getUsageRequests(ctx, tenantID, since, hours)
 	if err != nil {
@@ -266,17 +920,22 @@ type UsageData struct {
 	SignalTypes []SignalBucket  `json:"signal_types"`
 }
 
-func (s *Store) getUsageRequests(ctx context.Context, tenantID int64, since time.Time, hours int) ([]RequestBucket, error) {
-	groupBy := "%Y-%m-%d %H:00"
+func (s *Store) getUsageRequests(ctx context.Context, tenantID int64, since string, hours int) ([]RequestBucket, error) {
+	var query string
 	if hours > 168 {
-		groupBy = "%Y-%m-%d"
+		// 30d: group by day
+		query = `SELECT substr(hour_bucket, 1, 10) AS label, SUM(requests) AS cnt
+			 FROM usage_counters
+			 WHERE tenant_id = ? AND hour_bucket >= ?
+			 GROUP BY label ORDER BY label`
+	} else {
+		// 24h/7d: group by hour
+		query = `SELECT hour_bucket AS label, SUM(requests) AS cnt
+			 FROM usage_counters
+			 WHERE tenant_id = ? AND hour_bucket >= ?
+			 GROUP BY label ORDER BY label`
 	}
-	rows, err := s.db.QueryContext(ctx,
-		`SELECT strftime(?, created_at) AS label, COUNT(*) AS cnt
-		 FROM usage_logs
-		 WHERE tenant_id = ? AND created_at >= ?
-		 GROUP BY label ORDER BY label`,
-		groupBy, tenantID, since)
+	rows, err := s.db.QueryContext(ctx, query, tenantID, since)
 	if err != nil {
 		return nil, err
 	}
@@ -293,11 +952,11 @@ func (s *Store) getUsageRequests(ctx context.Context, tenantID int64, since time
 	return buckets, rows.Err()
 }
 
-func (s *Store) getUsageVolumes(ctx context.Context, tenantID int64, since time.Time) ([]VolumeBucket, error) {
+func (s *Store) getUsageVolumes(ctx context.Context, tenantID int64, since string) ([]VolumeBucket, error) {
 	rows, err := s.db.QueryContext(ctx,
-		`SELECT strftime('%Y-%m-%d', created_at) AS label, SUM(byte_count) AS total
-		 FROM usage_logs
-		 WHERE tenant_id = ? AND created_at >= ?
+		`SELECT substr(hour_bucket, 1, 10) AS label, SUM(bytes) AS total
+		 FROM usage_counters
+		 WHERE tenant_id = ? AND hour_bucket >= ?
 		 GROUP BY label ORDER BY label`,
 		tenantID, since)
 	if err != nil {
@@ -316,11 +975,11 @@ func (s *Store) getUsageVolumes(ctx context.Context, tenantID int64, since time.
 	return buckets, rows.Err()
 }
 
-func (s *Store) getUsageSignalTypes(ctx context.Context, tenantID int64, since time.Time) ([]SignalBucket, error) {
+func (s *Store) getUsageSignalTypes(ctx context.Context, tenantID int64, since string) ([]SignalBucket, error) {
 	rows, err := s.db.QueryContext(ctx,
-		`SELECT signal_type, COUNT(*) AS cnt
-		 FROM usage_logs
-		 WHERE tenant_id = ? AND created_at >= ?
+		`SELECT signal_type, SUM(requests) AS cnt
+		 FROM usage_counters
+		 WHERE tenant_id = ? AND hour_bucket >= ?
 		 GROUP BY signal_type ORDER BY cnt DESC`,
 		tenantID, since)
 	if err != nil {
@@ -340,7 +999,6 @@ func (s *Store) getUsageSignalTypes(ctx context.Context, tenantID int64, since t
 }
 
 // --- user auth ---
-
 func (s *Store) GetUserByUsername(ctx context.Context, username string) (id int64, passwordHash string, err error) {
 	err = s.db.QueryRowContext(ctx,
 		`SELECT id, password FROM users WHERE username = ?`, username,
@@ -392,4 +1050,212 @@ func (s *Store) CleanupOldLogs(ctx context.Context, retentionDays int) error {
 		`DELETE FROM usage_logs WHERE created_at < datetime('now', ? || ' days')`,
 		fmt.Sprintf("-%d", retentionDays))
 	return err
+}
+
+// --- certificates ---
+
+type Certificate struct {
+	ID                int64
+	TenantID          int64
+	SerialNumber      string
+	FingerprintSHA256 string
+	SubjectCN         string
+	NotBefore         time.Time
+	NotAfter          time.Time
+	RevokedAt         sql.NullTime
+	CreatedAt         time.Time
+	LastSeenAt        sql.NullTime
+}
+
+const certColumns = `id, tenant_id, serial_number, fingerprint_sha256, subject_cn,
+       not_before, not_after, revoked_at, created_at, last_seen_at`
+
+func scanCertificate(scanner interface{ Scan(...any) error }) (*Certificate, error) {
+	c := &Certificate{}
+	var notBefore, notAfter, revokedAt, lastSeenAt sql.NullTime
+	if err := scanner.Scan(&c.ID, &c.TenantID, &c.SerialNumber, &c.FingerprintSHA256, &c.SubjectCN,
+		&notBefore, &notAfter, &revokedAt, &c.CreatedAt, &lastSeenAt); err != nil {
+		return nil, err
+	}
+	if notBefore.Valid {
+		c.NotBefore = notBefore.Time
+	}
+	if notAfter.Valid {
+		c.NotAfter = notAfter.Time
+	}
+	if revokedAt.Valid {
+		c.RevokedAt = revokedAt
+	}
+	if lastSeenAt.Valid {
+		c.LastSeenAt = lastSeenAt
+	}
+	return c, nil
+}
+
+// LookupTenantByFingerprint resolves the active tenant for a client-cert
+// fingerprint. Returns (nil, nil) when the cert is unknown, revoked, or the
+// tenant is inactive.
+func (s *Store) LookupTenantByFingerprint(ctx context.Context, fingerprint string) (*Tenant, error) {
+	t, err := scanTenant(s.db.QueryRowContext(ctx,
+		`SELECT t.id, t.name, COALESCE(t.api_key, ''), t.active, t.description,
+		        t.rate_limit_rps, t.burst_bytes, t.daily_byte_quota, t.created_at, t.updated_at,
+		        COALESCE((SELECT ak.key_prefix FROM api_keys ak
+		                  WHERE ak.tenant_id = t.id AND ak.enabled = 1 AND ak.revoked_at IS NULL
+		                  ORDER BY ak.created_at DESC LIMIT 1), '') AS key_prefix
+		 FROM tenants t
+		 JOIN certificates c ON c.tenant_id = t.id
+		 WHERE c.fingerprint_sha256 = ? AND c.revoked_at IS NULL AND t.active = 1`,
+		fingerprint))
+	if err == sql.ErrNoRows {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	return t, nil
+}
+
+func (s *Store) LookupCertificateByFingerprint(ctx context.Context, fingerprint string) (*Certificate, error) {
+	c, err := scanCertificate(s.db.QueryRowContext(ctx,
+		`SELECT `+certColumns+` FROM certificates WHERE fingerprint_sha256 = ?`, fingerprint))
+	if err == sql.ErrNoRows {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	return c, nil
+}
+
+func (s *Store) UpdateLastSeen(ctx context.Context, fingerprint string) error {
+	_, err := s.db.ExecContext(ctx,
+		`UPDATE certificates SET last_seen_at = CURRENT_TIMESTAMP WHERE fingerprint_sha256 = ?`,
+		fingerprint)
+	return err
+}
+
+func (s *Store) AddCertificate(ctx context.Context, tenantID int64, serial, fingerprint, cn string, notBefore, notAfter time.Time) (*Certificate, error) {
+	res, err := s.db.ExecContext(ctx,
+		`INSERT INTO certificates (tenant_id, serial_number, fingerprint_sha256, subject_cn, not_before, not_after)
+		 VALUES (?, ?, ?, ?, ?, ?)`,
+		tenantID, serial, fingerprint, cn, notBefore, notAfter)
+	if err != nil {
+		return nil, err
+	}
+	id, _ := res.LastInsertId()
+	return &Certificate{
+		ID:                id,
+		TenantID:          tenantID,
+		SerialNumber:      serial,
+		FingerprintSHA256: fingerprint,
+		SubjectCN:         cn,
+		NotBefore:         notBefore,
+		NotAfter:          notAfter,
+		CreatedAt:         time.Now(),
+	}, nil
+}
+
+func (s *Store) RevokeCertificate(ctx context.Context, fingerprint string) error {
+	_, err := s.db.ExecContext(ctx,
+		`UPDATE certificates SET revoked_at = CURRENT_TIMESTAMP WHERE fingerprint_sha256 = ?`,
+		fingerprint)
+	return err
+}
+
+func (s *Store) ListCertificates(ctx context.Context, tenantID int64) ([]Certificate, error) {
+	rows, err := s.db.QueryContext(ctx,
+		`SELECT `+certColumns+` FROM certificates WHERE tenant_id = ? ORDER BY created_at DESC`, tenantID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var certs []Certificate
+	for rows.Next() {
+		c, err := scanCertificate(rows)
+		if err != nil {
+			return nil, err
+		}
+		certs = append(certs, *c)
+	}
+	return certs, rows.Err()
+}
+
+// ExpiringCertInfo is a lightweight view of a certificate expiring soon, returned
+// by ListExpiringCertificates.
+type ExpiringCertInfo struct {
+	TenantName string
+	CertID     int64
+	TenantID   int64
+	SubjectCN  string
+	NotAfter   time.Time
+}
+
+// ListExpiringCertificates returns all non-revoked certificates expiring within
+// the next withinHours hours, ordered by soonest expiry first.
+func (s *Store) ListExpiringCertificates(ctx context.Context, withinHours int) ([]ExpiringCertInfo, error) {
+	rows, err := s.db.QueryContext(ctx,
+		`SELECT t.name, c.id, c.tenant_id, c.subject_cn, c.not_after
+		 FROM certificates c
+		 JOIN tenants t ON t.id = c.tenant_id
+		 WHERE c.revoked_at IS NULL
+		   AND c.not_after <= datetime('now', '+' || ? || ' hours')
+		   AND t.active = 1
+		 ORDER BY c.not_after ASC`, withinHours)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var certs []ExpiringCertInfo
+	for rows.Next() {
+		var c ExpiringCertInfo
+		var notAfter sql.NullTime
+		if err := rows.Scan(&c.TenantName, &c.CertID, &c.TenantID, &c.SubjectCN, &notAfter); err != nil {
+			return nil, err
+		}
+		if notAfter.Valid {
+			c.NotAfter = notAfter.Time
+		}
+		certs = append(certs, c)
+	}
+	return certs, rows.Err()
+}
+
+// ExpiringCertsByTenant returns a count of expiring certificates per tenant
+// within the next withinHours hours.
+func (s *Store) ExpiringCertsByTenant(ctx context.Context, withinHours int) (map[int64]int, error) {
+	rows, err := s.db.QueryContext(ctx,
+		`SELECT c.tenant_id, COUNT(*)
+		 FROM certificates c
+		 JOIN tenants t ON t.id = c.tenant_id
+		 WHERE c.revoked_at IS NULL
+		   AND c.not_after <= datetime('now', '+' || ? || ' hours')
+		   AND t.active = 1
+		 GROUP BY c.tenant_id`, withinHours)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	m := make(map[int64]int)
+	for rows.Next() {
+		var tenantID int64
+		var count int
+		if err := rows.Scan(&tenantID, &count); err != nil {
+			return nil, err
+		}
+		m[tenantID] = count
+	}
+	return m, rows.Err()
+}
+
+// LookupCertificateByID fetches a certificate by its database ID.
+func (s *Store) LookupCertificateByID(ctx context.Context, id int64) (*Certificate, error) {
+	c, err := scanCertificate(s.db.QueryRowContext(ctx,
+		`SELECT `+certColumns+` FROM certificates WHERE id = ?`, id))
+	if err == sql.ErrNoRows {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	return c, nil
 }
