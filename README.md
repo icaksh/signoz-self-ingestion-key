@@ -14,14 +14,22 @@ Admin (:8080) — HTMX + Tailwind + Chart.js
 
 ## Quick Start
 
+> **Step-by-step guide:** [`docs/getting-started.md`](docs/getting-started.md) —
+> covers minimal setup, creating a tenant, sending test telemetry, and
+> checking the usage dashboard.
+
 ```bash
-# required: session signing key (openssl rand -hex 32)
-SESSION_SIGNING_KEY=<hex> \
+# 1. Generate a signing key
+openssl rand -hex 32
+
+# 2. Run (minimal — no syslog, no CA)
+SESSION_SIGNING_KEY=<hex-key> \
 SIGNOZ_ENDPOINT=http://localhost:4318 \
-ADMIN_LISTEN_ADDR=127.0.0.1:8080 \
 go run ./cmd/proxy
 # → Admin: http://localhost:8080  |  Proxy: http://localhost:4318
 ```
+
+```bash
 # docker
 docker compose up -d
 ```

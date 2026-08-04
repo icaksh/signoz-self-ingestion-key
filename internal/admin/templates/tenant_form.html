@@ -1,57 +1,59 @@
 {{define "tenant_form"}}
-<div class="mb-6 rounded-xl border border-indigo-500/30 bg-gray-900 p-4">
-    <h3 class="mb-4 text-sm font-semibold text-indigo-400">{{if .Tenant.ID}}Edit Tenant{{else}}New Tenant{{end}}</h3>
-    <form hx-post="{{.Action}}" hx-target="{{.Target}}" hx-swap="{{.Swap}}" class="space-y-4">
-        <input type="hidden" name="id" value="{{.Tenant.ID}}">
-        <div class="grid grid-cols-2 gap-4">
-            <div>
-                <label class="mb-1 block text-sm font-medium text-gray-300">Name</label>
-                <input type="text" name="name" value="{{.Tenant.Name}}" required
-                    class="w-full rounded-lg border border-gray-700 bg-gray-800 px-3 py-2 text-sm text-white placeholder-gray-500 focus:border-indigo-500 focus:outline-none focus:ring-1 focus:ring-indigo-500">
-            </div>
-            <div>
-                <label class="mb-1 block text-sm font-medium text-gray-300">Description</label>
-                <input type="text" name="description" value="{{.Tenant.Description}}"
-                    class="w-full rounded-lg border border-gray-700 bg-gray-800 px-3 py-2 text-sm text-white placeholder-gray-500 focus:border-indigo-500 focus:outline-none focus:ring-1 focus:ring-indigo-500">
-            </div>
-        </div>
-        <div class="flex items-center gap-3">
-            <label class="flex items-center gap-2 text-sm text-gray-300">
-                <input type="checkbox" name="active" {{if .Tenant.Active}}checked{{end}}
-                    class="rounded border-gray-600 bg-gray-700 text-indigo-600 focus:ring-indigo-500">
-                Active
-            </label>
-        </div>
-        <div class="mb-4">
-            <h4 class="mb-2 text-xs font-semibold text-gray-500 uppercase tracking-wider">Rate Limits</h4>
-            <p class="mb-3 text-xs text-gray-500">Leave empty for unlimited. All fields optional.</p>
-            <div class="grid grid-cols-3 gap-4">
+<div id="form-area-{{if .Tenant.ID}}edit{{else}}new{{end}}" class="card mb-6">
+    <div class="card-header">
+        <span class="font-semibold">{{if .Tenant.ID}}Edit{{else}}New{{end}} Tenant</span>
+        <button onclick="this.closest('.card').remove()" class="text-sm text-secondary hover:text-danger transition-colors">&times;</button>
+    </div>
+    <div class="card-body">
+        <form hx-{{if .Tenant.ID}}put{{else}}post{{end}}="{{.Action}}" hx-target="{{.Target}}" hx-swap="{{.Swap}}">
+            <div class="grid grid-cols-2 gap-4 mb-4">
                 <div>
-                    <label class="mb-1 block text-sm font-medium text-gray-300">Rate Limit (req/s)</label>
-                    <input type="number" name="rate_limit_rps" value="{{if .Tenant.RateLimitRPS}}{{.Tenant.RateLimitRPS}}{{end}}"
-                        min="1" placeholder="Unlimited"
-                        class="w-full rounded-lg border border-gray-700 bg-gray-800 px-3 py-2 text-sm text-white placeholder-gray-500 focus:border-indigo-500 focus:outline-none focus:ring-1 focus:ring-indigo-500">
+                    <label for="name">Name</label>
+                    <input type="text" id="name" name="name" value="{{.Tenant.Name}}" required
+                        placeholder="e.g. hisv3-production">
                 </div>
                 <div>
-                    <label class="mb-1 block text-sm font-medium text-gray-300">Burst Bytes</label>
-                    <input type="number" name="burst_bytes" value="{{if .Tenant.BurstBytes}}{{.Tenant.BurstBytes}}{{end}}"
-                        min="1" placeholder="Unlimited"
-                        class="w-full rounded-lg border border-gray-700 bg-gray-800 px-3 py-2 text-sm text-white placeholder-gray-500 focus:border-indigo-500 focus:outline-none focus:ring-1 focus:ring-indigo-500">
-                </div>
-                <div>
-                    <label class="mb-1 block text-sm font-medium text-gray-300">Daily Quota (MB)</label>
-                    <input type="number" name="daily_byte_quota" value="{{if .Tenant.DailyByteQuota}}{{megaBytes .Tenant.DailyByteQuota}}{{end}}"
-                        min="1" placeholder="Unlimited"
-                        class="w-full rounded-lg border border-gray-700 bg-gray-800 px-3 py-2 text-sm text-white placeholder-gray-500 focus:border-indigo-500 focus:outline-none focus:ring-1 focus:ring-indigo-500">
+                    <label for="description">Description</label>
+                    <input type="text" id="description" name="description" value="{{.Tenant.Description}}"
+                        placeholder="Optional description">
                 </div>
             </div>
-        </div>
-        <div class="flex items-center gap-2">
-            <button type="submit"
-                class="rounded-lg bg-indigo-600 px-4 py-2 text-sm font-semibold text-white hover:bg-indigo-500 transition-colors">Save</button>
-            <button type="button" hx-get="/tenants/cancel" hx-target="#form-area" hx-swap="innerHTML"
-                class="rounded-lg bg-gray-700 px-4 py-2 text-sm font-medium text-gray-300 hover:bg-gray-600 transition-colors">Cancel</button>
-        </div>
-    </form>
+            {{if .Tenant.ID}}
+            <div class="mb-4">
+                <label class="flex items-center gap-2">
+                    <input type="checkbox" name="active" {{if .Tenant.Active}}checked{{end}}>
+                    <span class="text-sm">Active</span>
+                </label>
+            </div>
+            {{end}}
+            <fieldset class="mb-6">
+                <legend class="text-sm font-semibold text-secondary mb-3">Rate Limits (optional, leave empty for unlimited)</legend>
+                <div class="grid grid-cols-3 gap-4">
+                    <div>
+                        <label for="rate_limit_rps">Rate Limit (rps)</label>
+                        <input type="number" id="rate_limit_rps" name="rate_limit_rps" min="0"
+                            value="{{.Tenant.RateLimitRPS}}"
+                            placeholder="Unlimited">
+                    </div>
+                    <div>
+                        <label for="burst_bytes">Burst (bytes/s)</label>
+                        <input type="number" id="burst_bytes" name="burst_bytes" min="0"
+                            value="{{.Tenant.BurstBytes}}"
+                            placeholder="Unlimited">
+                    </div>
+                    <div>
+                        <label for="daily_byte_quota">Daily Quota (MB)</label>
+                        <input type="number" id="daily_byte_quota" name="daily_byte_quota" min="0"
+                            value="{{if .Tenant.DailyByteQuota}}{{megaBytes .Tenant.DailyByteQuota}}{{end}}"
+                            placeholder="Unlimited">
+                    </div>
+                </div>
+            </fieldset>
+            <div class="flex gap-2 justify-end">
+                <button type="button" onclick="this.closest('.card').remove()" class="btn btn-ghost btn-sm">Cancel</button>
+                <button type="submit" class="btn btn-primary btn-sm">{{if .Tenant.ID}}Save{{else}}Create{{end}}</button>
+            </div>
+        </form>
+    </div>
 </div>
 {{end}}

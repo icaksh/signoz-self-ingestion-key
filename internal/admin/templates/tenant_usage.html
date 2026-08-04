@@ -1,45 +1,57 @@
 {{define "tenant_usage"}}
-{{template "base"}}
-<div class="mb-6 flex items-center justify-between">
-    <div>
-        <h1 class="text-xl font-bold text-white">Usage: {{.Tenant.Name}}</h1>
-        <a href="/" class="text-sm text-gray-400 hover:text-indigo-400 transition-colors">&larr; Back to tenants</a>
-    </div>
-    <div class="flex items-center gap-1 rounded-lg bg-gray-800 p-1">
-        <button onclick="loadData('24h');setActive(this)" class="rounded-md px-3 py-1.5 text-xs font-medium text-gray-400 hover:text-white transition-colors">24h</button>
-        <button onclick="loadData('7d');setActive(this)" class="rounded-md px-3 py-1.5 text-xs font-medium text-white bg-gray-700 transition-colors">7d</button>
-        <button onclick="loadData('30d');setActive(this)" class="rounded-md px-3 py-1.5 text-xs font-medium text-gray-400 hover:text-white transition-colors">30d</button>
-    </div>
-</div>
-{{if .Tenant.DailyByteQuota}}
-<div id="quota-summary" class="mb-6 rounded-xl border border-gray-800 bg-gray-900/50 p-4">
-    <h3 class="mb-3 text-sm font-semibold text-gray-300">Daily Quota</h3>
-    <div hx-get="/tenants/{{.Tenant.ID}}/quota" hx-trigger="load, every 60s">
-        <p class="text-sm text-gray-500">Loading...</p>
-    </div>
-</div>
-{{end}}
-<div class="grid grid-cols-2 gap-6">
-    <div class="rounded-xl border border-gray-800 bg-gray-900/50 p-6">
-        <h3 class="mb-4 text-sm font-semibold text-gray-300">Requests Over Time</h3>
-        <canvas id="requestsChart" height="200"></canvas>
-    </div>
-    <div class="rounded-xl border border-gray-800 bg-gray-900/50 p-6">
-        <h3 class="mb-4 text-sm font-semibold text-gray-300">Data Volume Over Time</h3>
-        <canvas id="volumesChart" height="200"></canvas>
-    </div>
-    <div class="rounded-xl border border-gray-800 bg-gray-900/50 p-6">
-        <h3 class="mb-4 text-sm font-semibold text-gray-300">Signal Type Breakdown</h3>
-        <canvas id="signalsChart" height="200"></canvas>
+{{template "base" .}}
+<div class="mb-6">
+    <div class="flex items-center justify-between">
+        <div>
+            <h1 class="text-xl font-bold">Usage: {{.Content.Tenant.Name}}</h1>
+            <a href="/" class="text-sm text-secondary hover:text-accent transition-colors">&larr; Back to tenants</a>
+        </div>
+        <div class="flex gap-1">
+            <button onclick="loadData('24h'); setActive(this)" class="btn btn-ghost btn-sm">24h</button>
+            <button onclick="loadData('7d'); setActive(this)" class="btn btn-ghost btn-sm bg-input">7d</button>
+            <button onclick="loadData('30d'); setActive(this)" class="btn btn-ghost btn-sm">30d</button>
+        </div>
     </div>
 </div>
 
+<div class="mb-6" hx-get="/tenants/{{.Content.Tenant.ID}}/quota" hx-trigger="load" hx-swap="innerHTML">
+    <div class="card p-4 text-sm text-secondary animate-pulse">Loading quota&hellip;</div>
+</div>
+
+<div class="grid grid-cols-1 lg:grid-cols-2 gap-4 mb-6">
+    <div class="card">
+        <div class="card-header">
+            <span class="text-sm font-semibold">Requests Over Time</span>
+        </div>
+        <div class="card-body">
+            <canvas id="requestsChart" class="h-[200px]"></canvas>
+        </div>
+    </div>
+    <div class="card">
+        <div class="card-header">
+            <span class="text-sm font-semibold">Data Volume Over Time</span>
+        </div>
+        <div class="card-body">
+            <canvas id="volumesChart" class="h-[200px]"></canvas>
+        </div>
+    </div>
+</div>
+<div class="card mb-6">
+    <div class="card-header">
+        <span class="text-sm font-semibold">Signal Type Breakdown</span>
+    </div>
+    <div class="card-body">
+        <canvas id="signalsChart" class="h-[200px]"></canvas>
+    </div>
+</div>
+
+<script src="/static/chart.umd.min.js"></script>
 <script>
-Chart.defaults.color = '#9ca3af';
-Chart.defaults.borderColor = '#1f2937';
+Chart.defaults.color = '#8b90a0';
+Chart.defaults.borderColor = '#1f2340';
 
 let requestsChart, volumesChart, signalsChart;
-const tenantId = {{.Tenant.ID}};
+const tenantId = {{.Content.Tenant.ID}};
 
 async function loadData(range) {
     const resp = await fetch('/tenants/' + tenantId + '/usage/data?range=' + range);
@@ -48,8 +60,10 @@ async function loadData(range) {
 }
 
 function setActive(btn) {
-    btn.parentElement.querySelectorAll('button').forEach(b => b.className = b.className.replace('bg-gray-700 text-white', 'text-gray-400'));
-    btn.className = btn.className.replace('text-gray-400', 'bg-gray-700 text-white');
+    btn.parentElement.querySelectorAll('button').forEach(function(b) {
+        b.classList.remove('bg-input');
+    });
+    btn.classList.add('bg-input');
 }
 
 function renderCharts(data) {
@@ -60,32 +74,46 @@ function renderCharts(data) {
     requestsChart = new Chart(document.getElementById('requestsChart'), {
         type: 'bar',
         data: {
-            labels: data.requests.map(r => r.label),
-            datasets: [{ label: 'Requests', data: data.requests.map(r => r.count), backgroundColor: '#6366f1', borderRadius: 4 }]
+            labels: data.requests.map(function(r) { return r.label; }),
+            datasets: [{ label: 'Requests', data: data.requests.map(function(r) { return r.count; }),
+                backgroundColor: '#5470f0', borderRadius: 4 }]
         },
-        options: { responsive: true, scales: { x: { grid: { display: false } }, y: { grid: { color: '#1f2937' } } } }
+        options: {
+            responsive: true,
+            scales: { x: { grid: { display: false } }, y: { grid: { color: '#1f2340' } } }
+        }
     });
 
     volumesChart = new Chart(document.getElementById('volumesChart'), {
         type: 'line',
         data: {
-            labels: data.volumes.map(v => v.label),
-            datasets: [{ label: 'Bytes', data: data.volumes.map(v => v.bytes), borderColor: '#22c55e', backgroundColor: 'rgba(34,197,94,0.1)', fill: true, tension: 0.3 }]
+            labels: data.volumes.map(function(v) { return v.label; }),
+            datasets: [{ label: 'Bytes', data: data.volumes.map(function(v) { return v.bytes; }),
+                borderColor: '#34d399', backgroundColor: 'rgba(52,211,153,0.1)',
+                fill: true, tension: 0.3 }]
         },
-        options: { responsive: true, scales: { x: { grid: { display: false } }, y: { grid: { color: '#1f2937' } } } }
+        options: {
+            responsive: true,
+            scales: { x: { grid: { display: false } }, y: { grid: { color: '#1f2340' } } }
+        }
     });
 
     signalsChart = new Chart(document.getElementById('signalsChart'), {
         type: 'doughnut',
         data: {
-            labels: data.signal_types.map(s => s.type),
-            datasets: [{ data: data.signal_types.map(s => s.count), backgroundColor: ['#6366f1','#22c55e','#f59e0b'], borderColor: '#111827' }]
+            labels: data.signal_types.map(function(s) { return s.type; }),
+            datasets: [{ data: data.signal_types.map(function(s) { return s.count; }),
+                backgroundColor: ['#5470f0','#34d399','#fbbf24','#f87171','#8b90a0','#06b6d4'],
+                borderColor: '#141620' }]
         },
-        options: { responsive: true, plugins: { legend: { position: 'bottom', labels: { padding: 16 } } } }
+        options: {
+            responsive: true,
+            plugins: { legend: { position: 'bottom', labels: { padding: 16 } } }
+        }
     });
 }
 
 loadData('7d');
 </script>
-{{template "base_end"}}
+{{template "base_end" .}}
 {{end}}

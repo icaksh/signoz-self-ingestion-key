@@ -29,15 +29,16 @@ type Config struct {
 	MaxBodyBytes       int64
 	UsageRetentionDays int
 
-	SyslogEnabled         bool
-	SyslogListenAddr      string
-	SyslogServerCertFile  string
-	SyslogServerKeyFile   string
-	SyslogClientCAFile    string
-	SyslogMaxFrameBytes   int
-	SyslogMaxConnections  int
-	SyslogConnIdleTimeout time.Duration
-	SyslogCollectorAddr   string
+	SyslogEnabled           bool
+	SyslogListenAddr        string
+	SyslogServerCertFile    string
+	SyslogServerKeyFile     string
+	SyslogClientCAFile      string
+	SyslogMaxFrameBytes     int
+	SyslogMaxConnections    int
+	SyslogMaxConnsPerTenant int
+	SyslogConnIdleTimeout   time.Duration
+	SyslogCollectorAddr     string
 
 	CAEnabled            bool
 	CAEndpoint           string
@@ -97,12 +98,16 @@ func Load() (*Config, error) {
 		return nil, fmt.Errorf("SIGNOZ_ENDPOINT is required")
 	}
 
+	// step-ca certificate lifecycle (optional)
+	c.CAEnabled = os.Getenv("CA_ENABLED") == "true"
+
 	// Syslog-over-TLS (mTLS) — optional
 	c.SyslogEnabled = os.Getenv("SYSLOG_ENABLED") == "true"
 	c.SyslogListenAddr = envOrDefault("SYSLOG_LISTEN_ADDR", ":6514")
 	c.SyslogCollectorAddr = envOrDefault("SYSLOG_COLLECTOR_ADDR", "127.0.0.1:5140")
 	c.SyslogMaxFrameBytes = envOrDefaultInt("SYSLOG_MAX_FRAME_BYTES", 65536)
 	c.SyslogMaxConnections = envOrDefaultInt("SYSLOG_MAX_CONNECTIONS", 1000)
+	c.SyslogMaxConnsPerTenant = envOrDefaultInt("SYSLOG_MAX_CONNS_PER_TENANT", 50)
 
 	timeoutStr := envOrDefault("SYSLOG_CONN_IDLE_TIMEOUT", "300s")
 	c.SyslogConnIdleTimeout, err = time.ParseDuration(timeoutStr)
@@ -110,22 +115,6 @@ func Load() (*Config, error) {
 		return nil, fmt.Errorf("SYSLOG_CONN_IDLE_TIMEOUT: %w", err)
 	}
 
-	if c.SyslogEnabled {
-		c.SyslogServerCertFile = os.Getenv("SYSLOG_SERVER_CERT_FILE")
-		c.SyslogServerKeyFile = os.Getenv("SYSLOG_SERVER_KEY_FILE")
-		c.SyslogClientCAFile = os.Getenv("SYSLOG_CLIENT_CA_FILE")
-		if c.SyslogServerCertFile == "" || c.SyslogServerKeyFile == "" || c.SyslogClientCAFile == "" {
-			return nil, fmt.Errorf("SYSLOG_ENABLED=true requires SYSLOG_SERVER_CERT_FILE, SYSLOG_SERVER_KEY_FILE, SYSLOG_CLIENT_CA_FILE")
-		}
-		for _, f := range []string{c.SyslogServerCertFile, c.SyslogServerKeyFile, c.SyslogClientCAFile} {
-			if _, err := os.Stat(f); err != nil {
-				return nil, fmt.Errorf("cannot access %s: %w", f, err)
-			}
-		}
-	}
-
-	// step-ca certificate lifecycle (optional)
-	c.CAEnabled = os.Getenv("CA_ENABLED") == "true"
 	if c.CAEnabled {
 		c.CAEndpoint = os.Getenv("CA_ENDPOINT")
 		c.CAProvisionerName = os.Getenv("CA_PROVISIONER_NAME")
@@ -154,6 +143,24 @@ func Load() (*Config, error) {
 		}
 		if _, err := os.Stat(c.CARootCertFile); err != nil {
 			return nil, fmt.Errorf("cannot access CA_ROOT_CERT_FILE %s: %w", c.CARootCertFile, err)
+		}
+	}
+
+	syslogTLSRequired := c.SyslogEnabled || c.CAEnabled
+	if syslogTLSRequired {
+		c.SyslogServerCertFile = os.Getenv("SYSLOG_SERVER_CERT_FILE")
+		c.SyslogServerKeyFile = os.Getenv("SYSLOG_SERVER_KEY_FILE")
+		c.SyslogClientCAFile = os.Getenv("SYSLOG_CLIENT_CA_FILE")
+		if c.SyslogServerCertFile == "" || c.SyslogServerKeyFile == "" || c.SyslogClientCAFile == "" {
+			if c.CAEnabled && !c.SyslogEnabled {
+				return nil, fmt.Errorf("CA_ENABLED=true requires SYSLOG_SERVER_CERT_FILE, SYSLOG_SERVER_KEY_FILE, SYSLOG_CLIENT_CA_FILE (used by the renewal listener)")
+			}
+			return nil, fmt.Errorf("SYSLOG_ENABLED=true requires SYSLOG_SERVER_CERT_FILE, SYSLOG_SERVER_KEY_FILE, SYSLOG_CLIENT_CA_FILE")
+		}
+		for _, f := range []string{c.SyslogServerCertFile, c.SyslogServerKeyFile, c.SyslogClientCAFile} {
+			if _, err := os.Stat(f); err != nil {
+				return nil, fmt.Errorf("cannot access %s: %w", f, err)
+			}
 		}
 	}
 

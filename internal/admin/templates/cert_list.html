@@ -1,40 +1,55 @@
 {{define "cert_list"}}
-{{template "base"}}
+{{template "base" .}}
 <div class="mb-6 flex items-center justify-between">
     <div>
-        <h1 class="text-xl font-bold text-white">Certificates: {{.Tenant.Name}}</h1>
-        <a href="/" class="text-sm text-gray-400 hover:text-indigo-400 transition-colors">&larr; Back to tenants</a>
+        <h1 class="text-xl font-bold">Certificates: {{.Content.Tenant.Name}}</h1>
+        <a href="/" class="text-sm text-secondary hover:text-accent transition-colors">&larr; Back to tenants</a>
     </div>
-    {{if .CAEnabled}}
-    <a href="/tenants/{{.Tenant.ID}}/certificates/new" class="rounded-lg bg-indigo-600 px-4 py-2 text-sm font-semibold text-white hover:bg-indigo-500 transition-colors">Issue Certificate</a>
+    {{if .Content.CAEnabled}}
+    <a href="/tenants/{{.Content.Tenant.ID}}/certificates/new" class="btn btn-primary btn-sm">Issue Certificate</a>
     {{end}}
 </div>
-{{if not .CAEnabled}}
-<div class="mb-4 rounded-lg border border-amber-500/30 bg-amber-950/30 p-4 text-sm text-amber-300">
-    CA integration is disabled — certificate issuance and renewal are unavailable.
+{{if not .Content.CAEnabled}}
+<div class="alert alert-info mb-4">
+    CA integration is disabled &mdash; certificate issuance and renewal are unavailable.
     Set <code>CA_ENABLED=true</code> plus the <code>CA_*</code> variables to enable it.
 </div>
 {{end}}
 <div id="form-area"></div>
-<div class="rounded-xl border border-gray-800 bg-gray-900/50 overflow-hidden">
-    <table class="w-full">
-        <thead>
-            <tr class="border-b border-gray-800 text-left text-xs font-medium text-gray-400 uppercase tracking-wider">
-                <th class="px-6 py-3">Fingerprint</th>
-                <th class="px-6 py-3">Serial</th>
-                <th class="px-6 py-3">Subject CN</th>
-                <th class="px-6 py-3">Expires</th>
-                <th class="px-6 py-3">Status</th>
-                <th class="px-6 py-3">Last Seen</th>
-                <th class="px-6 py-3">Actions</th>
-            </tr>
-        </thead>
-        <tbody id="cert-list" class="divide-y divide-gray-800">
-            {{range .Certificates}}
-                {{template "cert_row" (certRowData . $.Tenant.ID $.ExpiryWarnDays $.CAEnabled)}}
-            {{end}}
-        </tbody>
-    </table>
+{{if .Content.Certificates}}
+<div class="card">
+    <div class="overflow-x-auto">
+        <table>
+            <thead>
+                <tr>
+                    <th>Fingerprint</th>
+                    <th>Serial</th>
+                    <th>Subject CN</th>
+                    <th>Expires</th>
+                    <th>Status</th>
+                    <th>Last Seen</th>
+                    <th class="text-right">Actions</th>
+                </tr>
+            </thead>
+            <tbody id="cert-list">
+                {{range .Content.Certificates}}
+                    {{template "cert_row" (certRowData . $.Content.Tenant.ID $.Content.ExpiryWarnDays $.Content.CAEnabled)}}
+                {{end}}
+            </tbody>
+        </table>
+    </div>
 </div>
-{{template "base_end"}}
+{{else}}
+<div class="card">
+    <div class="empty-state">
+        <div class="empty-state-icon">&#x1f510;</div>
+        <div class="empty-state-title">No certificates issued</div>
+        <div class="empty-state-text">Issue a client certificate to enable syslog ingestion for this tenant.</div>
+        {{if .Content.CAEnabled}}
+        <a href="/tenants/{{.Content.Tenant.ID}}/certificates/new" class="btn btn-primary">Issue Certificate</a>
+        {{end}}
+    </div>
+</div>
+{{end}}
+{{template "base_end" .}}
 {{end}}

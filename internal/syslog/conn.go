@@ -56,11 +56,13 @@ func (s *Server) handleConnection(conn *tls.Conn) {
 		log.Printf("[syslog] update last_seen: %v", err)
 	}
 
-	// Rate limit: each accepted connection consumes one token for the tenant
-	if dec := s.limiter.AllowRPS(tenant.ID); !dec.Allowed {
-		log.Printf("[syslog] connection rejected: rate limited tenant_id=%d reason=%s", tenant.ID, dec.Reason)
+	// Per-tenant concurrent-connection cap
+	release, ok := s.acquireConnSlot(tenant.ID)
+	if !ok {
+		log.Printf("[syslog] connection rejected: max connections per tenant tenant=%s", tenant.Name)
 		return
 	}
+	defer release()
 
 	// Refuse new connections when the collector is unreachable (backpressure)
 	if !s.pool.Healthy() {
@@ -83,12 +85,29 @@ func (s *Server) handleConnection(conn *tls.Conn) {
 			return
 		}
 
+		// Per-frame rate limiting (replaces connect-time AllowRPS)
+		frameLen := int64(len(frame))
+		if dec := s.limiter.AllowRPS(tenant.ID); !dec.Allowed {
+			log.Printf("[syslog] frame rejected: tenant=%s reason=%s", tenant.Name, dec.Reason)
+			s.store.RecordUsage(tenant.ID, "syslog", 429, frameLen)
+			return
+		}
+		if dec := s.limiter.AllowBytes(tenant.ID, frameLen); !dec.Allowed {
+			log.Printf("[syslog] frame rejected: tenant=%s reason=%s", tenant.Name, dec.Reason)
+			s.store.RecordUsage(tenant.ID, "syslog", 429, frameLen)
+			return
+		}
+
 		stamped := StampSyslogMessage(frame, tenant.ID)
 
 		if err := s.pool.Forward(stamped); err != nil {
 			log.Printf("[syslog] forward error tenant=%s: %v", tenant.Name, err)
+			s.store.RecordUsage(tenant.ID, "syslog", 502, frameLen)
 			return
 		}
+
+		// Account the original frame bytes (pre-stamping), consistent with OTLP path
+		s.store.RecordUsage(tenant.ID, "syslog", 200, frameLen)
 	}
 }
 

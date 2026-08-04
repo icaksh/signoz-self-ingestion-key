@@ -17,27 +17,30 @@ import (
 )
 
 type Config struct {
-	Addr            string
-	ServerCertFile  string
-	ServerKeyFile   string
-	ClientCAFile    string
-	MaxFrameBytes   int
-	MaxConnections  int
-	ConnIdleTimeout time.Duration
-	CollectorAddr   string
+	Addr              string
+	ServerCertFile    string
+	ServerKeyFile     string
+	ClientCAFile      string
+	MaxFrameBytes     int
+	MaxConnections    int
+	MaxConnsPerTenant int
+	ConnIdleTimeout   time.Duration
+	CollectorAddr     string
 }
 
 type Server struct {
-	cfg        Config
-	store      *store.Store
-	gateway    *auth.Gateway
-	limiter    *ratelimit.Limiter
-	tlsConf    *tls.Config
-	pool       *CollectorPool
-	wg         sync.WaitGroup
-	connSem    chan struct{}
-	listenerMu sync.RWMutex
-	listener   net.Listener
+	cfg          Config
+	store        *store.Store
+	gateway      *auth.Gateway
+	limiter      *ratelimit.Limiter
+	tlsConf      *tls.Config
+	pool         *CollectorPool
+	wg           sync.WaitGroup
+	connSem      chan struct{}
+	connCounts   map[int64]int
+	connCountsMu sync.Mutex
+	listenerMu   sync.RWMutex
+	listener     net.Listener
 }
 
 // Addr returns the bound listener address (after ListenAndServe started).
@@ -72,17 +75,51 @@ func NewServer(cfg Config, st *store.Store, gw *auth.Gateway, lim *ratelimit.Lim
 		MinVersion:   tls.VersionTLS12,
 	}
 
+	if cfg.MaxConnsPerTenant <= 0 {
+		cfg.MaxConnsPerTenant = 50
+	}
+
 	pool := NewCollectorPool(cfg.CollectorAddr, 10, 30*time.Second)
 
 	return &Server{
-		cfg:     cfg,
-		store:   st,
-		gateway: gw,
-		limiter: lim,
-		tlsConf: tlsConf,
-		pool:    pool,
-		connSem: make(chan struct{}, cfg.MaxConnections),
+		cfg:        cfg,
+		store:      st,
+		gateway:    gw,
+		limiter:    lim,
+		tlsConf:    tlsConf,
+		pool:       pool,
+		connSem:    make(chan struct{}, cfg.MaxConnections),
+		connCounts: make(map[int64]int),
 	}, nil
+}
+
+// acquireConnSlot attempts to acquire a per-tenant connection slot. Returns
+// a release function or false if at capacity.
+func (s *Server) acquireConnSlot(tenantID int64) (release func(), ok bool) {
+	s.connCountsMu.Lock()
+	defer s.connCountsMu.Unlock()
+
+	max := s.cfg.MaxConnsPerTenant
+	if max <= 0 {
+		max = 50
+	}
+	if s.connCounts[tenantID] >= max {
+		return nil, false
+	}
+	s.connCounts[tenantID]++
+
+	once := sync.Once{}
+	release = func() {
+		once.Do(func() {
+			s.connCountsMu.Lock()
+			s.connCounts[tenantID]--
+			if s.connCounts[tenantID] <= 0 {
+				delete(s.connCounts, tenantID)
+			}
+			s.connCountsMu.Unlock()
+		})
+	}
+	return release, true
 }
 
 func (s *Server) ListenAndServe(ctx context.Context) error {

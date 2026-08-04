@@ -456,33 +456,125 @@ func TestOversizedFrameClosesConnection(t *testing.T) {
 	}
 }
 
-func TestLimiterOverLimitClosesConnection(t *testing.T) {
+func TestSyslogPerFrameRateLimit(t *testing.T) {
 	env := newTestEnv(t)
-	clientCert, clientKey := env.newClientCert(t, "limited-app")
+	clientCert, clientKey := env.newClientCert(t, "per-frame-limited")
 	rps := int64(1)
-	tenant, err := env.st.CreateTenant(context.Background(), "limited-app", "", &store.RateLimitParams{RateLimitRPS: &rps})
+	burst := int64(1_000_000)
+	quota := int64(100_000_000)
+	tenant, err := env.st.CreateTenant(context.Background(), "per-frame-limited", "",
+		&store.RateLimitParams{RateLimitRPS: &rps, BurstBytes: &burst, DailyByteQuota: &quota})
 	if err != nil {
 		t.Fatalf("create tenant: %v", err)
 	}
 	if _, err := env.st.AddCertificate(context.Background(), tenant.ID,
-		clientCert.SerialNumber.String(), fingerprint(clientCert), "limited-app",
+		clientCert.SerialNumber.String(), fingerprint(clientCert), "per-frame-limited",
 		clientCert.NotBefore, clientCert.NotAfter); err != nil {
 		t.Fatalf("add cert: %v", err)
 	}
 
 	cfg := env.clientTLS(clientCert, clientKey)
-
-	// First connection allowed (consumes the RPS token)
 	conn, err := env.dialTLS(t, cfg)
+	if err != nil {
+		t.Fatalf("dial: %v", err)
+	}
+	defer conn.Close()
+
+	msg := "<34>1 2024-01-01T12:00:00Z host app 1234 - - per-frame-test"
+	// First frame allowed
+	if _, err := conn.Write([]byte(fmt.Sprintf("%d %s", len(msg), msg))); err != nil {
+		t.Fatalf("write frame 1: %v", err)
+	}
+
+	// Second frame in same second — rate limited, connection closed
+	if _, err := conn.Write([]byte(fmt.Sprintf("%d %s", len(msg), msg))); err != nil {
+		t.Fatalf("write frame 2: %v", err)
+	}
+
+	// Only one frame should be forwarded
+	select {
+	case <-env.received:
+		// First frame — OK
+	case <-time.After(3 * time.Second):
+		t.Fatal("first frame not forwarded")
+	}
+
+	// Second frame should NOT arrive (connection closed due to rate limit)
+	select {
+	case <-env.received:
+		t.Fatal("second frame must not be forwarded — rate limit should close connection")
+	case <-time.After(2 * time.Second):
+		// Expected: connection closed, no second frame
+	}
+}
+
+func TestSyslogMaxConnsPerTenant(t *testing.T) {
+	env := newTestEnv(t)
+	env.srv.cfg.MaxConnsPerTenant = 1
+
+	clientCert, clientKey := env.newClientCert(t, "conn-cap-app")
+	env.registerCert(t, "conn-cap-app", clientCert)
+	cfg := env.clientTLS(clientCert, clientKey)
+
+	// First connection accepted
+	conn1, err := env.dialTLS(t, cfg)
 	if err != nil {
 		t.Fatalf("first dial: %v", err)
 	}
-	conn.Close()
-	// Let the server process the first connection
-	time.Sleep(50 * time.Millisecond)
+	defer conn1.Close()
 
-	// Second connection within the same second → rejected
+	// Second connection should be rejected at the cap
 	env.expectClosed(t, cfg)
+
+	// Close first connection — slot should be released
+	conn1.Close()
+	time.Sleep(100 * time.Millisecond)
+
+	// Now a new connection should be accepted
+	conn3, err := env.dialTLS(t, cfg)
+	if err != nil {
+		t.Fatalf("re-acquire after release: %v", err)
+	}
+	conn3.Close()
+}
+
+func TestSyslogUsageAccounting(t *testing.T) {
+	env := newTestEnv(t)
+	clientCert, clientKey := env.newClientCert(t, "usage-app")
+	tenantID := env.registerCert(t, "usage-app", clientCert)
+
+	conn, err := env.dialTLS(t, env.clientTLS(clientCert, clientKey))
+	if err != nil {
+		t.Fatalf("dial: %v", err)
+	}
+	defer conn.Close()
+
+	msg := "<34>1 2024-01-01T12:00:00Z host app 1234 - - usage-test"
+	if _, err := conn.Write([]byte(fmt.Sprintf("%d %s", len(msg), msg))); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+
+	select {
+	case <-env.received:
+	case <-time.After(3 * time.Second):
+		t.Fatal("collector did not receive frame")
+	}
+
+	// Flush counters and verify syslog usage is recorded
+	env.st.FlushCounters()
+	req, bytes, errs, err := env.st.CounterTotals(context.Background(), tenantID)
+	if err != nil {
+		t.Fatalf("counter totals: %v", err)
+	}
+	if req != 1 {
+		t.Fatalf("expected 1 syslog request, got %d", req)
+	}
+	if bytes == 0 {
+		t.Fatal("expected non-zero byte count for syslog")
+	}
+	if errs != 0 {
+		t.Fatalf("expected 0 errors, got %d", errs)
+	}
 }
 
 func TestRevokeBlocksPhase4Connection(t *testing.T) {

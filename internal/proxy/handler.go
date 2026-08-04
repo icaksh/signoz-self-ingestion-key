@@ -94,9 +94,10 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		dropped := h.store.DroppedSamples()
+		qf := h.limiter.QuotaFailures()
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusOK)
-		fmt.Fprintf(w, `{"status":"ok","dropped":%d}`, dropped)
+		fmt.Fprintf(w, `{"status":"ok","dropped":%d,"quota_failures":%d}`, dropped, qf)
 		return
 	}
 

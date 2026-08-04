@@ -20,9 +20,11 @@ func (l *Limiter) getDailyUsage(tenantID int64) int64 {
 
 	used, err := l.store.GetDailyByteUsage(context.Background(), tenantID)
 	if err != nil {
+		l.quotaFailures.Add(1)
 		log.Printf("[ratelimit] daily usage query error tenant=%d: %v", tenantID, err)
 		return 0
 	}
+	l.quotaFailures.Store(0)
 
 	l.mu.Lock()
 	l.quotaCache[tenantID] = &quotaEntry{

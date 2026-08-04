@@ -38,15 +38,15 @@ func (h *Handlers) CertificatesPage(w http.ResponseWriter, r *http.Request) {
 	tenantID, _ := strconv.ParseInt(r.PathValue("id"), 10, 64)
 	tenant, err := h.store.LookupTenantByID(r.Context(), tenantID)
 	if err != nil || tenant == nil {
-		http.Error(w, "not found", http.StatusNotFound)
+		h.renderError(w, r, http.StatusNotFound, "Tenant Not Found", "The requested tenant does not exist or has been deleted.")
 		return
 	}
 	certs, err := h.store.ListCertificates(r.Context(), tenantID)
 	if err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
+		h.renderError(w, r, http.StatusInternalServerError, "Database Error", err.Error())
 		return
 	}
-	h.render(w, "cert_list", CertListData{
+	h.renderPage(w, r, "cert_list", CertListData{
 		Tenant:         *tenant,
 		Certificates:   certs,
 		ExpiryWarnDays: 14,
@@ -59,10 +59,10 @@ func (h *Handlers) CertificateIssueForm(w http.ResponseWriter, r *http.Request) 
 	tenantID, _ := strconv.ParseInt(r.PathValue("id"), 10, 64)
 	tenant, err := h.store.LookupTenantByID(r.Context(), tenantID)
 	if err != nil || tenant == nil {
-		http.Error(w, "not found", http.StatusNotFound)
+		h.renderError(w, r, http.StatusNotFound, "Tenant Not Found", "The requested tenant does not exist or has been deleted.")
 		return
 	}
-	h.render(w, "cert_issue", CertListData{Tenant: *tenant, ExpiryWarnDays: 14, CAEnabled: h.caClient != nil})
+	h.renderPage(w, r, "cert_issue", CertListData{Tenant: *tenant, ExpiryWarnDays: 14, CAEnabled: h.caClient != nil})
 }
 
 // CertificateIssue handles CSR-based issuance (preferred).

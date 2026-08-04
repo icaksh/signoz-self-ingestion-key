@@ -427,6 +427,11 @@ func migrate(db *sql.DB) error {
 // ensureTenantSchema rebuilds the tenants table if it still carries the legacy
 // UNIQUE constraint on api_key. Multiple tenants must be able to store the
 // empty placeholder string (real keys live in the api_keys table now).
+//
+// The rebuild runs in a single transaction so a crash mid-rebuild cannot drop
+// the original tenants table without committing the replacement. Rate-limit
+// columns (rate_limit_rps, burst_bytes, daily_byte_quota) are preserved in the
+// rebuilt table.
 func ensureTenantSchema(db *sql.DB) error {
 	var sqlText string
 	err := db.QueryRow(`SELECT sql FROM sqlite_master WHERE type='table' AND name='tenants'`).Scan(&sqlText)
@@ -440,36 +445,56 @@ func ensureTenantSchema(db *sql.DB) error {
 		return nil // already rebuilt
 	}
 
-	// Rebuild without UNIQUE on api_key (standard SQLite 12-step-style rewrite).
-	// foreign_keys must be off while the referenced table is dropped.
+	// Verify PRAGMA foreign_keys is off BEFORE the transaction (SQLite
+	// forbids changing it inside a transaction).
+	var fkBefore string
+	_ = db.QueryRow("PRAGMA foreign_keys").Scan(&fkBefore)
 	if _, err := db.Exec(`PRAGMA foreign_keys=off`); err != nil {
 		return err
 	}
+
+	tx, err := db.Begin()
+	if err != nil {
+		return fmt.Errorf("rebuild begin tx: %w", err)
+	}
+	defer tx.Rollback()
+
 	steps := []string{
 		`CREATE TABLE tenants_rebuild (
-		    id          INTEGER PRIMARY KEY AUTOINCREMENT,
-		    name        TEXT NOT NULL,
-		    api_key     TEXT NOT NULL DEFAULT '',
-		    active      INTEGER NOT NULL DEFAULT 1,
-		    description TEXT NOT NULL DEFAULT '',
-		    created_at  DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
-		    updated_at  DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+		    id               INTEGER PRIMARY KEY AUTOINCREMENT,
+		    name             TEXT NOT NULL,
+		    api_key          TEXT NOT NULL DEFAULT '',
+		    active           INTEGER NOT NULL DEFAULT 1,
+		    description      TEXT NOT NULL DEFAULT '',
+		    rate_limit_rps   INTEGER,
+		    burst_bytes      INTEGER,
+		    daily_byte_quota INTEGER,
+		    created_at       DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+		    updated_at       DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
 		)`,
-		`INSERT INTO tenants_rebuild (id, name, api_key, active, description, created_at, updated_at)
-		 SELECT id, name, api_key, active, description, created_at, updated_at FROM tenants`,
+		`INSERT INTO tenants_rebuild (id, name, api_key, active, description, rate_limit_rps, burst_bytes, daily_byte_quota, created_at, updated_at)
+		 SELECT id, name, api_key, active, description, rate_limit_rps, burst_bytes, daily_byte_quota, created_at, updated_at FROM tenants`,
 		`DROP TABLE tenants`,
 		`ALTER TABLE tenants_rebuild RENAME TO tenants`,
 		`CREATE INDEX IF NOT EXISTS idx_tenants_api_key ON tenants(api_key)`,
 	}
 	for _, stmt := range steps {
-		if _, err := db.Exec(stmt); err != nil {
+		if _, err := tx.Exec(stmt); err != nil {
 			return fmt.Errorf("rebuild tenants table: %w", err)
 		}
 	}
+
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("rebuild commit: %w", err)
+	}
+
 	if _, err := db.Exec(`PRAGMA foreign_keys=on`); err != nil {
 		return err
 	}
-	log.Printf("[store] rebuilt tenants table (dropped legacy UNIQUE on api_key)")
+
+	var fkAfter string
+	_ = db.QueryRow("PRAGMA foreign_keys").Scan(&fkAfter)
+	log.Printf("[store] rebuilt tenants table (dropped legacy UNIQUE on api_key) pragma fk_before=%s fk_after=%s", fkBefore, fkAfter)
 	return nil
 }
 
@@ -1153,6 +1178,73 @@ func (s *Store) ListCertificates(ctx context.Context, tenantID int64) ([]Certifi
 		certs = append(certs, *c)
 	}
 	return certs, rows.Err()
+}
+
+// ExpiringCertInfo is a lightweight view of a certificate expiring soon, returned
+// by ListExpiringCertificates.
+type ExpiringCertInfo struct {
+	TenantName string
+	CertID     int64
+	TenantID   int64
+	SubjectCN  string
+	NotAfter   time.Time
+}
+
+// ListExpiringCertificates returns all non-revoked certificates expiring within
+// the next withinHours hours, ordered by soonest expiry first.
+func (s *Store) ListExpiringCertificates(ctx context.Context, withinHours int) ([]ExpiringCertInfo, error) {
+	rows, err := s.db.QueryContext(ctx,
+		`SELECT t.name, c.id, c.tenant_id, c.subject_cn, c.not_after
+		 FROM certificates c
+		 JOIN tenants t ON t.id = c.tenant_id
+		 WHERE c.revoked_at IS NULL
+		   AND c.not_after <= datetime('now', '+' || ? || ' hours')
+		   AND t.active = 1
+		 ORDER BY c.not_after ASC`, withinHours)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var certs []ExpiringCertInfo
+	for rows.Next() {
+		var c ExpiringCertInfo
+		var notAfter sql.NullTime
+		if err := rows.Scan(&c.TenantName, &c.CertID, &c.TenantID, &c.SubjectCN, &notAfter); err != nil {
+			return nil, err
+		}
+		if notAfter.Valid {
+			c.NotAfter = notAfter.Time
+		}
+		certs = append(certs, c)
+	}
+	return certs, rows.Err()
+}
+
+// ExpiringCertsByTenant returns a count of expiring certificates per tenant
+// within the next withinHours hours.
+func (s *Store) ExpiringCertsByTenant(ctx context.Context, withinHours int) (map[int64]int, error) {
+	rows, err := s.db.QueryContext(ctx,
+		`SELECT c.tenant_id, COUNT(*)
+		 FROM certificates c
+		 JOIN tenants t ON t.id = c.tenant_id
+		 WHERE c.revoked_at IS NULL
+		   AND c.not_after <= datetime('now', '+' || ? || ' hours')
+		   AND t.active = 1
+		 GROUP BY c.tenant_id`, withinHours)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	m := make(map[int64]int)
+	for rows.Next() {
+		var tenantID int64
+		var count int
+		if err := rows.Scan(&tenantID, &count); err != nil {
+			return nil, err
+		}
+		m[tenantID] = count
+	}
+	return m, rows.Err()
 }
 
 // LookupCertificateByID fetches a certificate by its database ID.

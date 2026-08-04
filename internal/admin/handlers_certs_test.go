@@ -99,7 +99,7 @@ func newCertTestServer(t *testing.T) (*httptest.Server, *store.Store, *httptest.
 	t.Cleanup(func() { st.Close() })
 
 	srv := NewServer(st, "127.0.0.1:0", []byte("0123456789abcdef0123456789abcdef"), false,
-		caClient, dl, "relay.example.com", 6514, 90*24*time.Hour)
+		caClient, dl, "relay.example.com", 6514, 90*24*time.Hour, nil)
 	ts := httptest.NewServer(srv.Handler)
 	t.Cleanup(ts.Close)
 	return ts, st, mockCA
@@ -256,7 +256,7 @@ func newCertDisabledServer(t *testing.T) (*httptest.Server, *store.Store) {
 
 	// caClient == nil => CA integration disabled
 	srv := NewServer(st, "127.0.0.1:0", []byte("0123456789abcdef0123456789abcdef"), false,
-		nil, nil, "", 6514, 90*24*time.Hour)
+		nil, nil, "", 6514, 90*24*time.Hour, nil)
 	ts := httptest.NewServer(srv.Handler)
 	t.Cleanup(ts.Close)
 	return ts, st

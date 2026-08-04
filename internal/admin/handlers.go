@@ -33,7 +33,8 @@ type FormData struct {
 }
 
 type IndexData struct {
-	Tenants []store.Tenant
+	Tenants       []store.Tenant
+	ExpiringCerts map[int64]int // tenantID → count of certs expiring within 7d
 }
 
 type UsagePage struct {
@@ -62,13 +63,41 @@ func (h *Handlers) render(w http.ResponseWriter, name string, data any) {
 	}
 }
 
+// renderPage wraps data with nav information (cert expiry count) and renders
+// the named template. Every page handler should call this instead of render.
+func (h *Handlers) renderPage(w http.ResponseWriter, r *http.Request, name string, data any) {
+	expiring, _ := h.store.ListExpiringCertificates(r.Context(), 168) // 7 days
+	wrapper := map[string]any{
+		"Content":       data,
+		"ExpiringCerts": len(expiring),
+	}
+	h.render(w, name, wrapper)
+}
+
+// renderError renders an error page within the application shell (HTML, not
+// plain text). It replaces raw http.Error calls for full-page responses.
+func (h *Handlers) renderError(w http.ResponseWriter, r *http.Request, status int, title, detail string) {
+	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	w.WriteHeader(status)
+	data := map[string]any{
+		"StatusCode":    status,
+		"Title":         title,
+		"Detail":        detail,
+		"ExpiringCerts": 0,
+	}
+	if err := h.tmpl.ExecuteTemplate(w, "error_page", data); err != nil {
+		log.Printf("[admin] error template failed: %v", err)
+	}
+}
+
 func (h *Handlers) Index(w http.ResponseWriter, r *http.Request) {
 	tenants, err := h.store.ListTenants(r.Context())
 	if err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
+		h.renderError(w, r, http.StatusInternalServerError, "Database Error", err.Error())
 		return
 	}
-	h.render(w, "index", IndexData{Tenants: tenants})
+	expiringMap, _ := h.store.ExpiringCertsByTenant(r.Context(), 168) // 7 days
+	h.renderPage(w, r, "index", IndexData{Tenants: tenants, ExpiringCerts: expiringMap})
 }
 
 func (h *Handlers) NewForm(w http.ResponseWriter, r *http.Request) {
@@ -121,7 +150,7 @@ func (h *Handlers) Create(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	// Tenant.APIKey holds the full plaintext key — rendered once in the response body.
-	h.render(w, "tenant_row", tenant)
+	h.render(w, "tenant_row", map[string]any{"Tenant": tenant, "ExpiringCount": 0})
 }
 
 func (h *Handlers) EditForm(w http.ResponseWriter, r *http.Request) {
@@ -152,7 +181,7 @@ func (h *Handlers) Update(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	tenant, _ := h.store.LookupTenantByID(r.Context(), id)
-	h.render(w, "tenant_row", tenant)
+	h.render(w, "tenant_row", map[string]any{"Tenant": tenant, "ExpiringCount": 0})
 }
 
 func (h *Handlers) Delete(w http.ResponseWriter, r *http.Request) {
@@ -179,17 +208,17 @@ func (h *Handlers) RegenerateKey(w http.ResponseWriter, r *http.Request) {
 	tenant.APIKey = newKey
 	tenant.KeyPrefix = newKey[:12]
 	// Full plaintext key returned once in the response body.
-	h.render(w, "tenant_row", tenant)
+	h.render(w, "tenant_row", map[string]any{"Tenant": tenant, "ExpiringCount": 0})
 }
 
 func (h *Handlers) UsagePage(w http.ResponseWriter, r *http.Request) {
 	id, _ := strconv.ParseInt(r.PathValue("id"), 10, 64)
 	tenant, err := h.store.LookupTenantByID(r.Context(), id)
 	if err != nil || tenant == nil {
-		http.Error(w, "not found", http.StatusNotFound)
+		h.renderError(w, r, http.StatusNotFound, "Tenant Not Found", "The requested tenant does not exist or has been deleted.")
 		return
 	}
-	h.render(w, "tenant_usage", UsagePage{Tenant: *tenant})
+	h.renderPage(w, r, "tenant_usage", UsagePage{Tenant: *tenant})
 }
 
 func (h *Handlers) UsageData(w http.ResponseWriter, r *http.Request) {
@@ -240,10 +269,10 @@ func (h *Handlers) QuotaFragment(w http.ResponseWriter, r *http.Request) {
 func (h *Handlers) UsersPage(w http.ResponseWriter, r *http.Request) {
 	users, err := h.store.ListUsers(r.Context())
 	if err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
+		h.renderError(w, r, http.StatusInternalServerError, "Database Error", err.Error())
 		return
 	}
-	h.render(w, "users", UsersPage{Users: users})
+	h.renderPage(w, r, "users", UsersPage{Users: users})
 }
 
 func (h *Handlers) CreateUser(w http.ResponseWriter, r *http.Request) {

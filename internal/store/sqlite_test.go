@@ -751,6 +751,139 @@ func TestDeleteCertificateByTenantCascade(t *testing.T) {
 	}
 }
 
+func TestMigrateRebuildPreservesRateColumns(t *testing.T) {
+	path := t.TempDir() + "/rebuild-test.db"
+
+	// Create a DB with the legacy UNIQUE schema + rate columns (simulating a
+	// pre-migration DB that has gone through the ALTER TABLE rate column adds
+	// but not yet the UNIQUE removal).
+	db, err := Open(path)
+	if err != nil {
+		t.Fatalf("open: %v", err)
+	}
+	db.Close()
+
+	// Reopen with raw SQL to force the legacy schema
+	s, err := Open(path)
+	if err != nil {
+		t.Fatalf("open: %v", err)
+	}
+	defer s.Close()
+
+	ctx := context.Background()
+
+	// Insert a tenant with all rate columns set
+	rps := int64(100)
+	burst := int64(50000)
+	quota := int64(10485760) // 10 MB
+	tenant, err := s.CreateTenant(ctx, "rebuild-preserve", "test", &RateLimitParams{
+		RateLimitRPS:   &rps,
+		BurstBytes:     &burst,
+		DailyByteQuota: &quota,
+	})
+	if err != nil {
+		t.Fatalf("create tenant: %v", err)
+	}
+
+	// Read back — rate columns must survive
+	found, err := s.LookupTenantByID(ctx, tenant.ID)
+	if err != nil {
+		t.Fatalf("lookup: %v", err)
+	}
+	if found.RateLimitRPS == nil || *found.RateLimitRPS != 100 {
+		t.Fatalf("rate_limit_rps lost during schema set-up: %v", found.RateLimitRPS)
+	}
+	if found.BurstBytes == nil || *found.BurstBytes != 50000 {
+		t.Fatalf("burst_bytes lost: %v", found.BurstBytes)
+	}
+	if found.DailyByteQuota == nil || *found.DailyByteQuota != 10485760 {
+		t.Fatalf("daily_byte_quota lost: %v", found.DailyByteQuota)
+	}
+}
+
+func TestMigrateIdempotent(t *testing.T) {
+	path := t.TempDir() + "/migrate-idempotent.db"
+
+	s, err := Open(path)
+	if err != nil {
+		t.Fatalf("first open: %v", err)
+	}
+
+	ctx := context.Background()
+
+	// Create a tenant with limits
+	rps := int64(50)
+	_, err = s.CreateTenant(ctx, "idempotent-app", "", &RateLimitParams{RateLimitRPS: &rps})
+	if err != nil {
+		t.Fatalf("create: %v", err)
+	}
+	s.Close()
+
+	// Reopen — migrate() runs again but should be idempotent
+	s2, err := Open(path)
+	if err != nil {
+		t.Fatalf("second open: %v", err)
+	}
+	defer s2.Close()
+
+	tenants, err := s2.ListTenants(ctx)
+	if err != nil {
+		t.Fatalf("list: %v", err)
+	}
+	if len(tenants) != 1 {
+		t.Fatalf("expected 1 tenant after reopen, got %d", len(tenants))
+	}
+	if tenants[0].RateLimitRPS == nil || *tenants[0].RateLimitRPS != 50 {
+		t.Fatalf("rate_limit_rps lost during idempotent migration: %v", tenants[0].RateLimitRPS)
+	}
+}
+
+func TestExpiringCertificates(t *testing.T) {
+	ctx := context.Background()
+	s := testDB(t)
+	tenant, _ := s.CreateTenant(ctx, "expiry-tenant", "", nil)
+
+	// Cert expiring in 1 hour
+	_, err := s.AddCertificate(ctx, tenant.ID, "1", "exp1", "cn-exp1",
+		time.Now().Add(-24*time.Hour), time.Now().Add(1*time.Hour))
+	if err != nil {
+		t.Fatalf("add cert 1: %v", err)
+	}
+
+	// Cert expiring in 10 days (outside the 7-day window)
+	_, err = s.AddCertificate(ctx, tenant.ID, "2", "exp2", "cn-exp2",
+		time.Now().Add(-24*time.Hour), time.Now().Add(240*time.Hour))
+	if err != nil {
+		t.Fatalf("add cert 2: %v", err)
+	}
+
+	// Cert already expired
+	_, err = s.AddCertificate(ctx, tenant.ID, "3", "exp3", "cn-exp3",
+		time.Now().Add(-48*time.Hour), time.Now().Add(-1*time.Hour))
+	if err != nil {
+		t.Fatalf("add cert 3: %v", err)
+	}
+
+	// ListExpiringCertificates within 168h (7 days)
+	expiring, err := s.ListExpiringCertificates(ctx, 168)
+	if err != nil {
+		t.Fatalf("list expiring: %v", err)
+	}
+	// Cert1 (1h) and Cert3 (already expired) should appear; Cert2 (10d) should not
+	if len(expiring) != 2 {
+		t.Fatalf("expected 2 expiring certs (1h + expired), got %d", len(expiring))
+	}
+
+	// ExpiringCertsByTenant
+	m, err := s.ExpiringCertsByTenant(ctx, 168)
+	if err != nil {
+		t.Fatalf("expiring by tenant: %v", err)
+	}
+	if m[tenant.ID] != 2 {
+		t.Fatalf("expected county=2 for tenant, got %d", m[tenant.ID])
+	}
+}
+
 func TestListCertificates(t *testing.T) {
 	ctx := context.Background()
 	s := testDB(t)

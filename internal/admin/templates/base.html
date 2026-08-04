@@ -1,49 +1,94 @@
 {{define "base"}}
 <!DOCTYPE html>
-<html lang="en" class="h-full bg-gray-950 text-gray-100">
+<html lang="en" class="h-full bg-shell">
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>OTLP Proxy Admin</title>
-    <script src="https://cdn.tailwindcss.com"></script>
-    <script>tailwind.config={darkMode:'class',theme:{extend:{}}}</script>
-    <script src="https://unpkg.com/htmx.org@2.0.4"></script>
-    <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
+    <link rel="stylesheet" href="/static/app.css">
+    <script src="/static/htmx.min.js"></script>
 </head>
 <body class="h-full">
-    <nav class="border-b border-gray-800 bg-gray-900/50 backdrop-blur">
-        <div class="mx-auto max-w-6xl px-4 sm:px-6 lg:px-8">
-            <div class="flex h-14 items-center justify-between">
-                <div class="flex items-center gap-3">
-                    <span class="text-lg font-bold tracking-tight text-white">OTLP Proxy</span>
-                    <span class="rounded-md bg-indigo-500/10 px-2 py-0.5 text-xs font-medium text-indigo-400">Admin</span>
-                </div>
-                <div class="flex items-center gap-4">
-                    <a href="/" class="text-sm text-gray-400 hover:text-white transition-colors">Tenants</a>
-                    <a href="/users" class="text-sm text-gray-400 hover:text-white transition-colors">Users</a>
-                    <form hx-post="/logout" hx-target="body" class="inline">
-                        <button class="text-sm text-gray-500 hover:text-red-400 transition-colors">Logout</button>
-                    </form>
-                </div>
+    <nav class="nav">
+        <div class="nav-inner">
+            <div class="nav-brand">
+                <span class="nav-brand-name">OTLP Proxy</span>
+                <span class="nav-badge">Admin</span>
+            </div>
+            <div class="nav-links">
+                <a href="/" class="nav-link">Tenants</a>
+                <a href="/users" class="nav-link">Users</a>
+                {{if gt .ExpiringCerts 0}}
+                <span class="nav-cert-badge" title="Certificates expiring within 7 days">{{.ExpiringCerts}}</span>
+                {{end}}
+                <form hx-post="/logout" hx-target="body" class="inline">
+                    <button class="nav-link" style="color:var(--danger);opacity:0.6">Logout</button>
+                </form>
             </div>
         </div>
     </nav>
-    <main class="mx-auto max-w-6xl px-4 sm:px-6 lg:px-8 py-8">
+    <main class="main">
 {{end}}
 
 {{define "base_end"}}
     </main>
-<script>
-function copyKey(key) {
-    navigator.clipboard.writeText(key).then(() => {
-        var toast = document.createElement('div');
-        toast.className = 'fixed bottom-4 right-4 rounded-lg bg-emerald-600 px-4 py-2 text-sm text-white shadow-lg z-50 animate-pulse';
-        toast.textContent = 'Key copied to clipboard!';
-        document.body.appendChild(toast);
-        setTimeout(() => toast.remove(), 2500);
-    });
-}
-</script>
+
+    {{template "confirm_overlay"}}
+
+    <script>
+    function copyKey(key) {
+        navigator.clipboard.writeText(key).then(function() {
+            var toast = document.createElement('div');
+            toast.className = 'toast';
+            toast.textContent = 'Key copied to clipboard';
+            document.body.appendChild(toast);
+            setTimeout(function() { toast.remove(); }, 2500);
+        });
+    }
+    </script>
 </body>
 </html>
+{{end}}
+
+{{define "confirm_overlay"}}
+<div id="confirm-overlay" class="confirm-overlay hidden">
+    <div class="confirm-dialog">
+        <div class="confirm-dialog-title">Confirm Action</div>
+        <div class="confirm-dialog-message" id="confirm-message"></div>
+        <div class="confirm-dialog-actions">
+            <button id="confirm-no" class="btn btn-ghost btn-sm" type="button">Cancel</button>
+            <button id="confirm-yes" class="btn btn-danger btn-sm" type="button">Yes, proceed</button>
+        </div>
+    </div>
+</div>
+<script>
+document.body.addEventListener('htmx:confirm', function(evt) {
+    var overlay = document.getElementById('confirm-overlay');
+    var msgEl = document.getElementById('confirm-message');
+    var name = evt.target.getAttribute('data-confirm-name') || 'this item';
+    var action = (evt.target.textContent || '').trim() || 'Modify';
+    msgEl.innerHTML = action + ' <span class="confirm-dialog-object">' + name + '</span>? This cannot be undone.';
+    overlay.classList.remove('hidden');
+    evt.preventDefault();
+
+    document.getElementById('confirm-yes').onclick = function() {
+        overlay.classList.add('hidden');
+        evt.detail.issueRequest();
+    };
+    document.getElementById('confirm-no').onclick = function() {
+        overlay.classList.add('hidden');
+    };
+});
+</script>
+{{end}}
+
+{{define "error_page"}}
+{{template "base" .}}
+<div class="error-page">
+    <div class="error-page-code">{{.Content.StatusCode}}</div>
+    <h1 class="error-page-title">{{.Content.Title}}</h1>
+    <p class="error-page-detail">{{.Content.Detail}}</p>
+    <a href="/" class="btn btn-primary">Return to dashboard</a>
+</div>
+{{template "base_end" .}}
 {{end}}

@@ -2,10 +2,12 @@ services:
   proxy:
     build: .
     container_name: otlp-proxy
+    env_file:
+      - .env
     ports:
       - "${PROXY_PORT:-4318}:4318"
       # Admin port — bind to localhost only in production. Expose only for local dev:
-      # - "127.0.0.1:${ADMIN_PORT:-8080}:8080"
+      - "127.0.0.1:${ADMIN_PORT:-8080}:8080"
       - "${SYSLOG_PORT:-6514}:6514"
       - "${CA_RENEWAL_PORT:-6543}:6543"
     environment:

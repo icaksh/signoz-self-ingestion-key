@@ -111,7 +111,7 @@ func main() {
 	}
 
 	adminServer := admin.NewServer(st, cfg.AdminListenAddr, cfg.SessionSigningKey, cfg.AdminCookieSecure,
-		caClient, dl, cfg.CAExternalHostname, cfg.CASyslogRelayPort, certLifetime)
+		caClient, dl, cfg.CAExternalHostname, cfg.CASyslogRelayPort, certLifetime, lim)
 	adminServer.ReadHeaderTimeout = 5 * time.Second
 	adminServer.ReadTimeout = 30 * time.Second
 	adminServer.WriteTimeout = 30 * time.Second
@@ -123,14 +123,15 @@ func main() {
 	defer syslogCancel()
 	if cfg.SyslogEnabled {
 		syslogSrv, err := syslog.NewServer(syslog.Config{
-			Addr:            cfg.SyslogListenAddr,
-			ServerCertFile:  cfg.SyslogServerCertFile,
-			ServerKeyFile:   cfg.SyslogServerKeyFile,
-			ClientCAFile:    cfg.SyslogClientCAFile,
-			MaxFrameBytes:   cfg.SyslogMaxFrameBytes,
-			MaxConnections:  cfg.SyslogMaxConnections,
-			ConnIdleTimeout: cfg.SyslogConnIdleTimeout,
-			CollectorAddr:   cfg.SyslogCollectorAddr,
+			Addr:              cfg.SyslogListenAddr,
+			ServerCertFile:    cfg.SyslogServerCertFile,
+			ServerKeyFile:     cfg.SyslogServerKeyFile,
+			ClientCAFile:      cfg.SyslogClientCAFile,
+			MaxFrameBytes:     cfg.SyslogMaxFrameBytes,
+			MaxConnections:    cfg.SyslogMaxConnections,
+			MaxConnsPerTenant: cfg.SyslogMaxConnsPerTenant,
+			ConnIdleTimeout:   cfg.SyslogConnIdleTimeout,
+			CollectorAddr:     cfg.SyslogCollectorAddr,
 		}, st, gateway, lim)
 		if err != nil {
 			log.Fatalf("syslog: %v", err)

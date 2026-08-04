@@ -6,7 +6,9 @@ import (
 	"embed"
 	"encoding/base64"
 	"encoding/json"
+	"fmt"
 	"html/template"
+	"io/fs"
 	"log"
 	"net/http"
 	"strings"
@@ -15,39 +17,55 @@ import (
 	"golang.org/x/crypto/bcrypt"
 
 	"github.com/sismedika/otlp-proxy/internal/ca"
+	"github.com/sismedika/otlp-proxy/internal/ratelimit"
 	"github.com/sismedika/otlp-proxy/internal/store"
 )
 
 //go:embed templates/*.html
 var templateFS embed.FS
 
+//go:embed static/*
+var staticFS embed.FS
+
 type Server struct {
 	store        *store.Store
 	tmpl         *template.Template
 	h            *Handlers
+	limiter      *ratelimit.Limiter
 	signingKey   []byte
 	cookieSecure bool
 	loginLimiter *LoginLimiter
 }
 
-func NewServer(st *store.Store, addr string, signingKey []byte, cookieSecure bool, caClient *ca.Client, dl *ca.DownloadManager, caExternalHostname string, caSyslogPort int, certLifetime time.Duration) *http.Server {
+func NewServer(st *store.Store, addr string, signingKey []byte, cookieSecure bool, caClient *ca.Client, dl *ca.DownloadManager, caExternalHostname string, caSyslogPort int, certLifetime time.Duration, lim *ratelimit.Limiter) *http.Server {
 	funcMap := template.FuncMap{
-		"maskKey":      maskKey,
-		"megaBytes":    megaBytes,
-		"percent":      percentOf,
-		"certRowData":  certRowData,
-		"formatTime":   formatTime,
-		"expired":      expired,
-		"expiringSoon": expiringSoon,
-		"daysUntil":    daysUntil,
+		"maskKey":           maskKey,
+		"megaBytes":         megaBytes,
+		"percent":           percentOf,
+		"certRowData":       certRowData,
+		"formatTime":        formatTime,
+		"expired":           expired,
+		"expiringSoon":      expiringSoon,
+		"daysUntil":         daysUntil,
+		"fingerprintFormat": fingerprintFormat,
+		"fingerprintShort":  fingerprintShort,
+		"dict":              dict,
 	}
 
 	tmpl := template.Must(template.New("").Funcs(funcMap).ParseFS(templateFS, "templates/*.html"))
 
 	h := NewHandlers(st, tmpl, caClient, dl, caExternalHostname, caSyslogPort, certLifetime)
-	s := &Server{store: st, tmpl: tmpl, h: h, signingKey: signingKey, cookieSecure: cookieSecure, loginLimiter: NewLoginLimiter()}
+	s := &Server{store: st, tmpl: tmpl, h: h, limiter: lim, signingKey: signingKey, cookieSecure: cookieSecure, loginLimiter: NewLoginLimiter()}
 
 	mux := http.NewServeMux()
+
+	// static assets — use fs.Sub to strip the "static" directory from embed paths
+	staticSub, err := fs.Sub(staticFS, "static")
+	if err != nil {
+		log.Fatalf("static embed: %v", err)
+	}
+	staticHandler := http.FileServer(http.FS(staticSub))
+	mux.Handle("GET /static/", http.StripPrefix("/static/", staticHandler))
 
 	// public
 	mux.HandleFunc("GET /healthz", s.healthz)
@@ -145,16 +163,63 @@ func daysUntil(t time.Time) int {
 	return int(time.Until(t).Hours() / 24)
 }
 
+// dict creates a map from alternating key-value pairs for use in template
+// pipelines. Usage: {{template "x" (dict "K1" V1 "K2" V2)}}
+func dict(values ...any) (map[string]any, error) {
+	if len(values)%2 != 0 {
+		return nil, fmt.Errorf("dict: odd number of arguments")
+	}
+	m := make(map[string]any, len(values)/2)
+	for i := 0; i < len(values); i += 2 {
+		key, ok := values[i].(string)
+		if !ok {
+			return nil, fmt.Errorf("dict: key at position %d is not a string", i)
+		}
+		m[key] = values[i+1]
+	}
+	return m, nil
+}
+
+// fingerprintFormat groups a hex fingerprint into 4-char blocks separated by
+// spaces for easier visual comparison (e.g. "aaaa bbbb cccc dddd").
+func fingerprintFormat(s string) string {
+	s = strings.TrimSpace(s)
+	if len(s) == 0 {
+		return s
+	}
+	var b strings.Builder
+	for i, c := range s {
+		if i > 0 && i%4 == 0 {
+			b.WriteByte(' ')
+		}
+		b.WriteRune(c)
+	}
+	return b.String()
+}
+
+// fingerprintShort returns the first 8 chars + ellipsis for compact display.
+func fingerprintShort(s string) string {
+	s = strings.TrimSpace(s)
+	if len(s) <= 12 {
+		return s
+	}
+	return s[:8] + "\u2026"
+}
+
 func (s *Server) healthz(w http.ResponseWriter, r *http.Request) {
+	qf := int64(0)
+	if s.limiter != nil {
+		qf = s.limiter.QuotaFailures()
+	}
 	if err := s.store.Ping(r.Context()); err != nil {
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusServiceUnavailable)
-		w.Write([]byte(`{"status":"unhealthy"}`))
+		fmt.Fprintf(w, `{"status":"unhealthy","quota_failures":%d}`, qf)
 		return
 	}
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusOK)
-	w.Write([]byte(`{"status":"ok"}`))
+	fmt.Fprintf(w, `{"status":"ok","quota_failures":%d}`, qf)
 }
 
 // --- auth ---
@@ -220,7 +285,7 @@ func (s *Server) loginPage(w http.ResponseWriter, r *http.Request) {
 		http.Redirect(w, r, "/setup", http.StatusSeeOther)
 		return
 	}
-	if err := s.tmpl.ExecuteTemplate(w, "login", nil); err != nil {
+	if err := s.tmpl.ExecuteTemplate(w, "login", map[string]any{"Content": nil, "ExpiringCerts": 0}); err != nil {
 		log.Printf("[admin] template error: %v", err)
 	}
 }
@@ -278,7 +343,7 @@ func (s *Server) setupPage(w http.ResponseWriter, r *http.Request) {
 		http.Redirect(w, r, "/login", http.StatusSeeOther)
 		return
 	}
-	if err := s.tmpl.ExecuteTemplate(w, "setup", nil); err != nil {
+	if err := s.tmpl.ExecuteTemplate(w, "setup", map[string]any{"Content": nil, "ExpiringCerts": 0}); err != nil {
 		log.Printf("[admin] template error: %v", err)
 	}
 }

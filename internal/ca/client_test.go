@@ -10,8 +10,8 @@ import (
 	"encoding/pem"
 	"io"
 	"math/big"
+	"net"
 	"net/http"
-	"net/http/httptest"
 	"strings"
 	"testing"
 	"time"
@@ -94,9 +94,26 @@ func newTestClient(t *testing.T, endpoint string) *Client {
 	return c
 }
 
+func newIPv4Server(t *testing.T, handler http.Handler) string {
+	t.Helper()
+	ln, err := net.Listen("tcp4", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("listen: %v", err)
+	}
+	srv := &http.Server{Handler: handler}
+	go func() {
+		_ = srv.Serve(ln)
+	}()
+	t.Cleanup(func() {
+		_ = srv.Close()
+		_ = ln.Close()
+	})
+	return "http://" + ln.Addr().String()
+}
+
 func TestSignCertificate(t *testing.T) {
-	mockCA := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path != "/v1/sign" {
+	mockCAURL := newIPv4Server(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/sign" {
 			w.WriteHeader(http.StatusNotFound)
 			return
 		}
@@ -104,19 +121,27 @@ func TestSignCertificate(t *testing.T) {
 			w.WriteHeader(http.StatusUnauthorized)
 			return
 		}
-		if r.Header.Get("Content-Type") != "application/pkcs10" {
+		if r.Header.Get("Content-Type") != "application/json" {
 			w.WriteHeader(http.StatusBadRequest)
 			return
 		}
-		csrPEM, _ := io.ReadAll(r.Body)
-		certPEM := signCSRForTest(t, csrPEM)
+		var req struct {
+			CSR string `json:"csr"`
+			OTT string `json:"ott"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			t.Fatalf("decode sign request: %v", err)
+		}
+		if req.CSR == "" || req.OTT == "" {
+			t.Fatalf("missing csr or ott in sign request: %#v", req)
+		}
+		certPEM := signCSRForTest(t, []byte(req.CSR))
 		w.Header().Set("Content-Type", "application/pem-certificate-chain")
 		w.WriteHeader(http.StatusOK)
 		_, _ = w.Write(certPEM)
 	}))
-	defer mockCA.Close()
 
-	client := newTestClient(t, mockCA.URL)
+	client := newTestClient(t, mockCAURL)
 	csr := makeCSR(t, "test-client")
 
 	cert, err := client.Sign(csr, 24*time.Hour)
@@ -133,21 +158,33 @@ func TestSignCertificate(t *testing.T) {
 
 func TestRenewCertificate(t *testing.T) {
 	var gotPath string
-	mockCA := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	mockCAURL := newIPv4Server(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		gotPath = r.URL.Path
 		if r.Header.Get("Authorization") == "" {
 			w.WriteHeader(http.StatusUnauthorized)
 			return
 		}
-		csrPEM, _ := io.ReadAll(r.Body)
-		certPEM := signCSRForTest(t, csrPEM)
+		if r.Header.Get("Content-Type") != "application/json" {
+			w.WriteHeader(http.StatusBadRequest)
+			return
+		}
+		var req struct {
+			CRT string `json:"crt"`
+			OTT string `json:"ott"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			t.Fatalf("decode renew request: %v", err)
+		}
+		if req.CRT == "" || req.OTT == "" {
+			t.Fatalf("missing crt or ott in renew request: %#v", req)
+		}
+		certPEM := signCSRForTest(t, []byte(req.CRT))
 		w.Header().Set("Content-Type", "application/pem-certificate-chain")
 		w.WriteHeader(http.StatusOK)
 		_, _ = w.Write(certPEM)
 	}))
-	defer mockCA.Close()
 
-	client := newTestClient(t, mockCA.URL)
+	client := newTestClient(t, mockCAURL)
 	csr := makeCSR(t, "renewed-client")
 
 	cert, err := client.Renew("deadbeef", csr)
@@ -157,15 +194,15 @@ func TestRenewCertificate(t *testing.T) {
 	if cert == nil {
 		t.Fatal("expected certificate")
 	}
-	if gotPath != "/v1/renew" {
-		t.Fatalf("expected /v1/renew, got %q", gotPath)
+	if gotPath != "/renew" {
+		t.Fatalf("expected /renew, got %q", gotPath)
 	}
 }
 
 func TestRevokeCertificate(t *testing.T) {
 	var body string
-	mockCA := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path != "/v1/revoke" {
+	mockCAURL := newIPv4Server(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/revoke" {
 			w.WriteHeader(http.StatusNotFound)
 			return
 		}
@@ -177,9 +214,8 @@ func TestRevokeCertificate(t *testing.T) {
 		body = string(b)
 		w.WriteHeader(http.StatusOK)
 	}))
-	defer mockCA.Close()
 
-	client := newTestClient(t, mockCA.URL)
+	client := newTestClient(t, mockCAURL)
 	if err := client.Revoke("abc123", "keyCompromise"); err != nil {
 		t.Fatalf("revoke failed: %v", err)
 	}
@@ -189,12 +225,11 @@ func TestRevokeCertificate(t *testing.T) {
 }
 
 func TestSignAuthFailure(t *testing.T) {
-	mockCA := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	mockCAURL := newIPv4Server(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusUnauthorized)
 	}))
-	defer mockCA.Close()
 
-	client := newTestClient(t, mockCA.URL)
+	client := newTestClient(t, mockCAURL)
 	_, err := client.Sign(makeCSR(t, "x"), time.Hour)
 	if err == nil {
 		t.Fatal("expected auth failure error")
@@ -205,12 +240,11 @@ func TestSignAuthFailure(t *testing.T) {
 }
 
 func TestSignServerError(t *testing.T) {
-	mockCA := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	mockCAURL := newIPv4Server(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusInternalServerError)
 	}))
-	defer mockCA.Close()
 
-	client := newTestClient(t, mockCA.URL)
+	client := newTestClient(t, mockCAURL)
 	_, err := client.Sign(makeCSR(t, "x"), time.Hour)
 	if err == nil {
 		t.Fatal("expected server error")

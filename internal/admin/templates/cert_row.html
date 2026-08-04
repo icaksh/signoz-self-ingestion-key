@@ -1,32 +1,56 @@
 {{define "cert_row"}}
-<tr id="cert-{{.Certificate.ID}}" class="hover:bg-gray-800/50 transition-colors {{if .Certificate.RevokedAt.Valid}}opacity-60{{end}}">
-    <td class="px-6 py-4 text-sm font-mono text-gray-400">{{printf "%.16s" .Certificate.FingerprintSHA256}}&hellip;</td>
-    <td class="px-6 py-4 text-sm font-mono text-gray-400">{{.Certificate.SerialNumber}}</td>
-    <td class="px-6 py-4 text-sm text-white">{{.Certificate.SubjectCN}}</td>
-    <td class="px-6 py-4 text-sm text-gray-300">{{formatTime .Certificate.NotAfter}}</td>
-    <td class="px-6 py-4">
-        {{if .Certificate.RevokedAt.Valid}}
-        <span class="inline-flex items-center rounded-full bg-gray-500/10 px-2 py-0.5 text-xs font-medium text-gray-400 ring-1 ring-inset ring-gray-500/20">Revoked</span>
-        {{else if expired .Certificate.NotAfter}}
-        <span class="inline-flex items-center rounded-full bg-red-500/10 px-2 py-0.5 text-xs font-medium text-red-400 ring-1 ring-inset ring-red-500/20">Expired</span>
-        {{else if expiringSoon .Certificate.NotAfter .ExpiryWarnDays}}
-        <span class="inline-flex items-center rounded-full bg-amber-500/10 px-2 py-0.5 text-xs font-medium text-amber-400 ring-1 ring-inset ring-amber-500/20">Expires in {{daysUntil .Certificate.NotAfter}}d</span>
-        {{else}}
-        <span class="inline-flex items-center rounded-full bg-emerald-500/10 px-2 py-0.5 text-xs font-medium text-emerald-400 ring-1 ring-inset ring-emerald-500/20">Active</span>
+<tr id="cert-{{.Certificate.ID}}">
+    <td>
+        <div class="fingerprint" title="{{.Certificate.FingerprintSHA256}}">
+            {{fingerprintFormat .Certificate.FingerprintSHA256}}
+        </div>
+    </td>
+    <td>
+        <code class="text-xs text-secondary">{{fingerprintFormat .Certificate.SerialNumber}}</code>
+    </td>
+    <td>{{.Certificate.SubjectCN}}</td>
+    <td class="text-nowrap">
+        {{formatTime .Certificate.NotAfter}}
+        {{if expiringSoon .Certificate.NotAfter .ExpiryWarnDays}}
+        <div class="text-xs text-warning">{{daysUntil .Certificate.NotAfter}}d remaining</div>
         {{end}}
     </td>
-    <td class="px-6 py-4 text-sm text-gray-500">{{if .Certificate.LastSeenAt.Valid}}{{formatTime .Certificate.LastSeenAt.Time}}{{else}}never{{end}}</td>
-    <td class="px-6 py-4">
-        <div class="flex items-center gap-2">
+    <td>
+        {{if .Certificate.RevokedAt.Valid}}
+        <span class="badge badge-danger">Revoked</span>
+        {{else if expired .Certificate.NotAfter}}
+        <span class="badge badge-danger">Expired</span>
+        {{else if expiringSoon .Certificate.NotAfter .ExpiryWarnDays}}
+        <span class="badge badge-warning">Expiring</span>
+        {{else}}
+        <span class="badge badge-success">Valid</span>
+        {{end}}
+    </td>
+    <td>
+        {{if .Certificate.LastSeenAt.Valid}}
+        <span class="text-xs text-secondary">{{formatTime .Certificate.LastSeenAt.Time}}</span>
+        {{else}}
+        <span class="text-xs text-secondary">&mdash;</span>
+        {{end}}
+    </td>
+    <td>
+        <div class="flex items-center justify-end gap-1 flex-wrap">
             {{if .CAEnabled}}
             {{if not .Certificate.RevokedAt.Valid}}
-            <button hx-post="/tenants/{{.TenantID}}/certificates/{{.Certificate.ID}}/renew" hx-target="#cert-{{.Certificate.ID}}" hx-swap="outerHTML" hx-confirm="Renew this certificate (new keypair)?"
-                class="rounded-lg px-3 py-1.5 text-xs font-medium text-gray-300 hover:bg-gray-700 transition-colors">Renew</button>
+            <button hx-post="/tenants/{{.TenantID}}/certificates/{{.Certificate.ID}}/renew"
+                hx-target="#cert-{{.Certificate.ID}}" hx-swap="outerHTML"
+                hx-confirm="true" data-confirm-name="cert {{fingerprintShort .Certificate.FingerprintSHA256}}"
+                class="btn btn-ghost btn-sm">Renew</button>
             {{end}}
             {{end}}
-            <button hx-post="/tenants/{{.TenantID}}/certificates/{{.Certificate.ID}}/revoke" hx-target="#cert-{{.Certificate.ID}}" hx-swap="outerHTML" hx-confirm="Revoke this certificate immediately?"
-                class="rounded-lg px-3 py-1.5 text-xs font-medium text-red-400 hover:bg-red-500/10 transition-colors">Revoke</button>
-            <a href="/tenants/{{.TenantID}}/certificates/{{.Certificate.ID}}/download" class="rounded-lg px-3 py-1.5 text-xs font-medium text-gray-300 hover:bg-gray-700 transition-colors">Details</a>
+            {{if not .Certificate.RevokedAt.Valid}}
+            <button hx-post="/tenants/{{.TenantID}}/certificates/{{.Certificate.ID}}/revoke"
+                hx-target="#cert-{{.Certificate.ID}}" hx-swap="outerHTML"
+                hx-confirm="true" data-confirm-name="cert {{fingerprintShort .Certificate.FingerprintSHA256}}"
+                class="btn btn-ghost btn-sm" style="color:var(--danger)">Revoke</button>
+            {{end}}
+            <a href="/tenants/{{.TenantID}}/certificates/{{.Certificate.ID}}/download"
+                class="btn btn-ghost btn-sm">Download</a>
         </div>
     </td>
 </tr>

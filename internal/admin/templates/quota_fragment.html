@@ -1,13 +1,28 @@
 {{define "quota_fragment"}}
-{{if and .Quota (gt .Quota 0)}}
-<div class="flex items-center justify-between mb-2">
-    <span class="text-sm text-gray-400">Current 24h consumption</span>
-    <span class="text-sm font-medium text-gray-300">{{megaBytes .Used}} MB / {{megaBytes .Quota}} MB ({{percent .Used .Quota}}%)</span>
-</div>
-<div class="h-2.5 w-full overflow-hidden rounded-full bg-gray-800">
-    <div class="h-full rounded-full {{if ge (percent .Used .Quota) 90}}bg-red-500{{else if ge (percent .Used .Quota) 70}}bg-amber-500{{else}}bg-emerald-500{{end}}" style="width: {{percent .Used .Quota}}%"></div>
+{{$pct := percent .Used .Quota}}
+{{$color := "success"}}
+{{if gt $pct 90}}{{$color = "danger"}}
+{{else if gt $pct 70}}{{$color = "warning"}}{{end}}
+{{if gt .Quota 0}}
+<div class="card p-4">
+    <div class="flex items-center justify-between mb-2">
+        <span class="text-sm font-semibold">Daily Quota</span>
+        <span class="text-xs">
+            <span class="text-secondary">{{megaBytes .Used}} MB</span>
+            <span class="text-secondary"> / </span>
+            <span>{{megaBytes .Quota}} MB</span>
+        </span>
+    </div>
+    <div class="progress-track">
+        <div class="progress-fill progress-fill-{{$color}}" style="width:{{$pct}}%"></div>
+    </div>
+    <div class="mt-1 text-xs text-secondary text-right">{{$pct}}% used</div>
 </div>
 {{else}}
-<p class="text-sm text-gray-500">N/A — no daily quota set</p>
+<div class="card p-4 text-sm text-secondary">
+    <span class="flex items-center gap-2">
+        <span class="text-secondary">&infin;</span> No daily quota configured
+    </span>
+</div>
 {{end}}
 {{end}}

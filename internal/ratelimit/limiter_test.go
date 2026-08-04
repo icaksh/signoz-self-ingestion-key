@@ -129,6 +129,27 @@ func TestAllowOrder(t *testing.T) {
 	}
 }
 
+func TestQuotaFailuresCounter(t *testing.T) {
+	st := testDB(t)
+	tenant, _ := st.CreateTenant(context.Background(), "qf-test", "", nil)
+
+	lim := NewLimiter(st)
+
+	// Initial count should be 0
+	if qf := lim.QuotaFailures(); qf != 0 {
+		t.Fatalf("expected 0 quota failures, got %d", qf)
+	}
+
+	// Successful lookup resets to 0
+	st.RecordUsage(tenant.ID, "traces", 200, 100)
+	st.FlushCounters()
+
+	lim.AllowBytes(tenant.ID, 10)
+	if qf := lim.QuotaFailures(); qf != 0 {
+		t.Fatalf("expected 0 quota failures after successful lookup, got %d", qf)
+	}
+}
+
 func TestBucketEviction(t *testing.T) {
 	st := testDB(t)
 	tenant, _ := st.CreateTenant(context.Background(), "evict-test", "", &store.RateLimitParams{RateLimitRPS: int64p(1)})

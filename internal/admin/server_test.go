@@ -29,7 +29,7 @@ func testAdminServer(t *testing.T) (*httptest.Server, *store.Store) {
 		t.Fatalf("create user: %v", err)
 	}
 
-	srv := NewServer(st, "127.0.0.1:0", []byte("0123456789abcdef0123456789abcdef"), false, nil, nil, "", 6514, 2160*time.Hour)
+	srv := NewServer(st, "127.0.0.1:0", []byte("0123456789abcdef0123456789abcdef"), false, nil, nil, "", 6514, 2160*time.Hour, nil)
 	ts := httptest.NewServer(srv.Handler)
 	t.Cleanup(ts.Close)
 	return ts, st
@@ -164,7 +164,7 @@ func TestSetupRequiresLongPassword(t *testing.T) {
 	}
 	t.Cleanup(func() { st.Close() })
 
-	srv := NewServer(st, "127.0.0.1:0", []byte("0123456789abcdef0123456789abcdef"), false, nil, nil, "", 6514, 2160*time.Hour)
+	srv := NewServer(st, "127.0.0.1:0", []byte("0123456789abcdef0123456789abcdef"), false, nil, nil, "", 6514, 2160*time.Hour, nil)
 	ts := httptest.NewServer(srv.Handler)
 	t.Cleanup(ts.Close)
 

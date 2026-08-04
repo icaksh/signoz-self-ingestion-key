@@ -4,6 +4,7 @@ import (
 	"context"
 	"log"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"golang.org/x/time/rate"
@@ -32,11 +33,12 @@ type quotaEntry struct {
 // daily byte quota. Tenant limits are read from the store on each check;
 // buckets are lazily created and evicted after 1h idle.
 type Limiter struct {
-	store      *store.Store
-	mu         sync.Mutex
-	buckets    map[int64]*tenantBucket
-	quotaCache map[int64]*quotaEntry
-	done       chan struct{}
+	store         *store.Store
+	mu            sync.Mutex
+	buckets       map[int64]*tenantBucket
+	quotaCache    map[int64]*quotaEntry
+	quotaFailures atomic.Int64
+	done          chan struct{}
 }
 
 func NewLimiter(st *store.Store) *Limiter {
@@ -46,6 +48,11 @@ func NewLimiter(st *store.Store) *Limiter {
 		quotaCache: make(map[int64]*quotaEntry),
 		done:       make(chan struct{}),
 	}
+}
+
+// QuotaFailures returns the number of times the daily usage query failed.
+func (l *Limiter) QuotaFailures() int64 {
+	return l.quotaFailures.Load()
 }
 
 func (l *Limiter) Start() {

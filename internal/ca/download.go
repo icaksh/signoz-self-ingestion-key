@@ -63,14 +63,28 @@ func (m *DownloadManager) Consume(token string) (*DownloadToken, error) {
 		return nil, ErrTokenInvalid
 	}
 	if time.Now().After(dt.ExpiresAt) {
+		// Zero key bytes before deleting
+		for i := range dt.KeyPEM {
+			dt.KeyPEM[i] = 0
+		}
 		delete(m.tokens, token)
 		return nil, ErrTokenExpired
 	}
 	if dt.Used {
 		return nil, ErrTokenUsed
 	}
-	dt.Used = true
-	return dt, nil
+
+	// Copy payload, then zero the originals and delete immediately
+	result := &DownloadToken{
+		CertPEM: append([]byte(nil), dt.CertPEM...),
+		KeyPEM:  append([]byte(nil), dt.KeyPEM...),
+	}
+	for i := range dt.KeyPEM {
+		dt.KeyPEM[i] = 0
+	}
+	delete(m.tokens, token)
+
+	return result, nil
 }
 
 func (m *DownloadManager) Stop() {
@@ -87,6 +101,9 @@ func (m *DownloadManager) cleanup() {
 			now := time.Now()
 			for token, dt := range m.tokens {
 				if now.After(dt.ExpiresAt) {
+					for i := range dt.KeyPEM {
+						dt.KeyPEM[i] = 0
+					}
 					delete(m.tokens, token)
 				}
 			}

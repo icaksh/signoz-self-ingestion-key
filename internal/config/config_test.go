@@ -248,6 +248,18 @@ func TestCAEnabledWithFullConfig(t *testing.T) {
 	os.WriteFile(root, []byte("x"), 0600)
 	t.Setenv("CA_ROOT_CERT_FILE", root)
 	t.Setenv("CA_EXTERNAL_HOSTNAME", "relay.example.com")
+	dir := t.TempDir()
+	serverCert := dir + "/server.crt"
+	serverKey := dir + "/server.key"
+	clientCA := dir + "/client-ca.crt"
+	for _, f := range []string{serverCert, serverKey, clientCA} {
+		if err := os.WriteFile(f, []byte("x"), 0600); err != nil {
+			t.Fatalf("write: %v", err)
+		}
+	}
+	t.Setenv("SYSLOG_SERVER_CERT_FILE", serverCert)
+	t.Setenv("SYSLOG_SERVER_KEY_FILE", serverKey)
+	t.Setenv("SYSLOG_CLIENT_CA_FILE", clientCA)
 
 	cfg, err := Load()
 	if err != nil {
@@ -261,5 +273,28 @@ func TestCAEnabledWithFullConfig(t *testing.T) {
 	}
 	if cfg.CARenewalListenAddr != ":6543" {
 		t.Fatalf("expected :6543 renewal addr, got %q", cfg.CARenewalListenAddr)
+	}
+}
+
+func TestCAEnabledRequiresSyslogTLSFiles(t *testing.T) {
+	t.Setenv("SIGNOZ_ENDPOINT", "http://localhost:4318")
+	t.Setenv("SESSION_SIGNING_KEY", strings.Repeat("ab", 32))
+	t.Setenv("CA_ENABLED", "true")
+	t.Setenv("CA_ENDPOINT", "https://step-ca:9000")
+	t.Setenv("CA_PROVISIONER_NAME", "proxy")
+	t.Setenv("CA_PROVISIONER_KEY", `{"kty":"EC"}`)
+	root := t.TempDir() + "/root.crt"
+	if err := os.WriteFile(root, []byte("x"), 0600); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+	t.Setenv("CA_ROOT_CERT_FILE", root)
+	t.Setenv("CA_EXTERNAL_HOSTNAME", "relay.example.com")
+
+	_, err := Load()
+	if err == nil {
+		t.Fatal("expected error when CA_ENABLED=true without syslog TLS files")
+	}
+	if !strings.Contains(err.Error(), "SYSLOG_SERVER_CERT_FILE") {
+		t.Fatalf("expected syslog TLS error, got: %v", err)
 	}
 }
