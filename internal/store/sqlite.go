@@ -144,10 +144,12 @@ type UsageWriter struct {
 	stopOnce sync.Once
 }
 
+const usageWriterBufferSize = 65536
+
 func NewUsageWriter(db *sql.DB) *UsageWriter {
 	return &UsageWriter{
 		db:       db,
-		ch:       make(chan counterSample, 4096),
+		ch:       make(chan counterSample, usageWriterBufferSize),
 		flushReq: make(chan chan struct{}),
 		accum:    make(map[counterKey]*counterAccum),
 	}
