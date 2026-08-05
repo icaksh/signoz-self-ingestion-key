@@ -32,13 +32,21 @@ func mockCAServer(t *testing.T) *httptest.Server {
 			w.WriteHeader(http.StatusUnauthorized)
 			return
 		}
-		body := make([]byte, 0)
 		switch r.URL.Path {
-		case "/v1/sign", "/v1/renew":
-			buf := make([]byte, 8192)
-			n, _ := r.Body.Read(buf)
-			body = buf[:n]
-			block, _ := pem.Decode(body)
+		case "/sign", "/renew":
+			var req struct {
+				CSR string `json:"csr"`
+				CRT string `json:"crt"`
+			}
+			if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+				w.WriteHeader(http.StatusBadRequest)
+				return
+			}
+			pemData := req.CSR
+			if pemData == "" {
+				pemData = req.CRT
+			}
+			block, _ := pem.Decode([]byte(pemData))
 			if block == nil {
 				w.WriteHeader(http.StatusBadRequest)
 				return
@@ -58,10 +66,12 @@ func mockCAServer(t *testing.T) *httptest.Server {
 				ExtKeyUsage:  []x509.ExtKeyUsage{x509.ExtKeyUsageClientAuth},
 			}
 			der, _ := x509.CreateCertificate(rand.Reader, tmpl, tmpl, csr.PublicKey, key)
-			w.Header().Set("Content-Type", "application/pem-certificate-chain")
-			w.WriteHeader(http.StatusOK)
-			_, _ = w.Write(pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: der}))
-		case "/v1/revoke":
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusCreated)
+			_ = json.NewEncoder(w).Encode(map[string]string{
+				"crt": string(pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: der})),
+			})
+		case "/revoke":
 			w.WriteHeader(http.StatusOK)
 		default:
 			w.WriteHeader(http.StatusNotFound)

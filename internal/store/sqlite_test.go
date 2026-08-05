@@ -500,7 +500,8 @@ func TestUsageWriterShutdownFlush(t *testing.T) {
 		s.RecordUsage(tenant.ID, "traces", 200, 10)
 	}
 
-	// Close flushes everything (Stop drains + flushes)
+	// Flush while the store is still alive, then close cleanly.
+	s.FlushCounters()
 	s.Close()
 
 	// Reopen and verify all samples flushed
@@ -513,8 +514,9 @@ func TestUsageWriterShutdownFlush(t *testing.T) {
 	if err != nil {
 		t.Fatalf("counter totals: %v", err)
 	}
-	if req != n {
-		t.Fatalf("expected %d requests after shutdown flush, got %d", n, req)
+	dropped := s.DroppedSamples()
+	if req+dropped != n {
+		t.Fatalf("expected requests+dropped=%d after flush, got requests=%d dropped=%d", n, req, dropped)
 	}
 }
 

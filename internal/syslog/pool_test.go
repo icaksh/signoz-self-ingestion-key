@@ -180,10 +180,17 @@ func TestPoolConcurrency(t *testing.T) {
 	}
 	wg.Wait()
 
-	mu.Lock()
-	got := count
-	mu.Unlock()
-	if got != 50 {
-		t.Fatalf("expected 50 messages received, got %d", got)
+	deadline := time.Now().Add(2 * time.Second)
+	for {
+		mu.Lock()
+		got := count
+		mu.Unlock()
+		if got == 50 {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("expected 50 messages received, got %d", got)
+		}
+		time.Sleep(10 * time.Millisecond)
 	}
 }
