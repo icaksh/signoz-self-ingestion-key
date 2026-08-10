@@ -4,25 +4,35 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>OTLP Proxy Admin</title>
+    <meta name="color-scheme" content="dark">
+    <meta name="theme-color" content="#0b0e17">
+    <title>OTLP Proxy · Admin</title>
+    <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24'%3E%3Crect width='24' height='24' rx='6' fill='%236366f1'/%3E%3Cpath d='M6 12h2l2-5 4 10 2-5h2' fill='none' stroke='white' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E">
     <link rel="stylesheet" href="/static/app.css">
     <script src="/static/htmx.min.js"></script>
 </head>
 <body class="h-full">
+    <div id="htmx-progress"></div>
     <nav class="nav">
         <div class="nav-inner">
-            <div class="nav-brand">
+            <a href="/" class="nav-brand">
+                <span class="nav-brand-mark" aria-hidden="true">
+                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round">
+                        <path d="M4 12h3l2-6 4 12 2-6h5"/>
+                    </svg>
+                </span>
                 <span class="nav-brand-name">OTLP Proxy</span>
                 <span class="nav-badge">Admin</span>
-            </div>
+            </a>
             <div class="nav-links">
-                <a href="/" class="nav-link">Tenants</a>
-                <a href="/users" class="nav-link">Users</a>
+                <a href="/" class="nav-link" data-nav="tenants">Tenants</a>
+                <a href="/users" class="nav-link" data-nav="users">Users</a>
                 {{if gt .ExpiringCerts 0}}
-                <span class="nav-cert-badge" title="Certificates expiring within 7 days">{{.ExpiringCerts}}</span>
+                <span class="nav-cert-badge" title="{{.ExpiringCerts}} certificate(s) expiring within 7 days">{{.ExpiringCerts}}</span>
                 {{end}}
+                <span class="nav-sep" aria-hidden="true"></span>
                 <form hx-post="/logout" hx-target="body" class="inline">
-                    <button class="nav-link" style="color:var(--danger);opacity:0.6">Logout</button>
+                    <button class="nav-link" style="color:var(--danger)">Log out</button>
                 </form>
             </div>
         </div>
@@ -40,11 +50,32 @@
         navigator.clipboard.writeText(key).then(function() {
             var toast = document.createElement('div');
             toast.className = 'toast';
-            toast.textContent = 'Key copied to clipboard';
+            toast.textContent = 'API key copied to clipboard';
             document.body.appendChild(toast);
             setTimeout(function() { toast.remove(); }, 2500);
         });
     }
+
+    // Highlight the active nav item based on the current path.
+    (function() {
+        var path = window.location.pathname;
+        var key = path.indexOf('/users') === 0 ? 'users' : 'tenants';
+        document.querySelectorAll('.nav-link[data-nav]').forEach(function(el) {
+            if (el.getAttribute('data-nav') === key) el.classList.add('is-active');
+        });
+    })();
+
+    // Top loading bar driven by HTMX request lifecycle.
+    document.body.addEventListener('htmx:beforeRequest', function() {
+        document.body.classList.add('htmx-request-active');
+    });
+    ['htmx:afterRequest', 'htmx:responseError', 'htmx:sendError'].forEach(function(evt) {
+        document.body.addEventListener(evt, function() {
+            var bar = document.getElementById('htmx-progress');
+            if (bar) { bar.style.transition = 'transform .2s ease, opacity .2s ease'; bar.style.transform = 'scaleX(1)'; }
+            setTimeout(function() { document.body.classList.remove('htmx-request-active'); }, 200);
+        });
+    });
     </script>
 </body>
 </html>

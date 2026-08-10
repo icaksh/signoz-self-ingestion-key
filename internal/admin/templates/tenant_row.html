@@ -21,10 +21,10 @@
     </td>
     <td>
         <div class="key-prefix">{{.Tenant.KeyPrefix}}</div>
-        <div class="mt-1 text-xs text-secondary">
-            {{if .Tenant.RateLimitRPS}}{{megaBytes .Tenant.RateLimitRPS}} rps{{else}}unlimited{{end}}
-            {{if .Tenant.BurstBytes}}&middot; {{megaBytes .Tenant.BurstBytes}} MB/s burst{{end}}
-            {{if .Tenant.DailyByteQuota}}&middot; {{megaBytes .Tenant.DailyByteQuota}} MB/day{{end}}
+        <div class="meta-list mt-1">
+            {{if .Tenant.RateLimitRPS}}<span class="meta-chip">{{.Tenant.RateLimitRPS}} rps</span>{{else}}<span class="meta-chip">Unlimited</span>{{end}}
+            {{if .Tenant.BurstBytes}}<span>&middot;</span><span class="meta-chip">{{megaBytes .Tenant.BurstBytes}} MB/s burst</span>{{end}}
+            {{if .Tenant.DailyByteQuota}}<span>&middot;</span><span class="meta-chip">{{megaBytes .Tenant.DailyByteQuota}} MB/day</span>{{end}}
         </div>
     </td>
     <td class="text-nowrap">

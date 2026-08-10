@@ -1,8 +1,13 @@
 {{define "cert_issue"}}
 {{template "base" .}}
-<div class="mb-6">
-    <h1 class="text-xl font-bold">Issue Certificate: {{.Content.Tenant.Name}}</h1>
-    <a href="/tenants/{{.Content.Tenant.ID}}/certificates" class="text-sm text-secondary hover:text-accent transition-colors">&larr; Back to certificates</a>
+<div class="page-header">
+    <div>
+        <a href="/tenants/{{.Content.Tenant.ID}}/certificates" class="eyebrow">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" style="width:0.85rem;height:0.85rem"><path d="M15 18l-6-6 6-6"/></svg>
+            Certificates
+        </a>
+        <h1 class="page-title">Issue certificate · {{.Content.Tenant.Name}}</h1>
+    </div>
 </div>
 
 {{if not .Content.CAEnabled}}

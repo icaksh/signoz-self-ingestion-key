@@ -30,15 +30,15 @@
                 <legend class="text-sm font-semibold text-secondary mb-3">Rate Limits (optional, leave empty for unlimited)</legend>
                 <div class="grid grid-cols-3 gap-4">
                     <div>
-                        <label for="rate_limit_rps">Rate Limit (rps)</label>
+                        <label for="rate_limit_rps">Rate limit (rps)</label>
                         <input type="number" id="rate_limit_rps" name="rate_limit_rps" min="0"
-                            value="{{.Tenant.RateLimitRPS}}"
+                            value="{{if .Tenant.RateLimitRPS}}{{.Tenant.RateLimitRPS}}{{end}}"
                             placeholder="Unlimited">
                     </div>
                     <div>
                         <label for="burst_bytes">Burst (bytes/s)</label>
                         <input type="number" id="burst_bytes" name="burst_bytes" min="0"
-                            value="{{.Tenant.BurstBytes}}"
+                            value="{{if .Tenant.BurstBytes}}{{.Tenant.BurstBytes}}{{end}}"
                             placeholder="Unlimited">
                     </div>
                     <div>

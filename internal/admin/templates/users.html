@@ -1,9 +1,15 @@
 {{define "users"}}
 {{template "base" .}}
-<div class="mb-6 flex items-center justify-between">
-    <h1 class="text-xl font-bold">Admin Users</h1>
+<div class="page-header">
+    <div>
+        <h1 class="page-title">Admin users</h1>
+        <p class="page-subtitle">People who can sign in to this dashboard and manage tenants.</p>
+    </div>
     <button onclick="document.getElementById('new-user-form').classList.toggle('hidden')"
-        class="btn btn-primary btn-sm">Add User</button>
+        class="btn btn-primary btn-sm">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round"><path d="M12 5v14M5 12h14"/></svg>
+        Add user
+    </button>
 </div>
 
 <div id="new-user-form" class="card mb-6 hidden">

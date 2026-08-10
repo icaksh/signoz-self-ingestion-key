@@ -1,16 +1,33 @@
 {{define "tenant_usage"}}
 {{template "base" .}}
-<div class="mb-6">
-    <div class="flex items-center justify-between">
-        <div>
-            <h1 class="text-xl font-bold">Usage: {{.Content.Tenant.Name}}</h1>
-            <a href="/" class="text-sm text-secondary hover:text-accent transition-colors">&larr; Back to tenants</a>
-        </div>
-        <div class="flex gap-1">
-            <button onclick="loadData('24h'); setActive(this)" class="btn btn-ghost btn-sm">24h</button>
-            <button onclick="loadData('7d'); setActive(this)" class="btn btn-ghost btn-sm bg-input">7d</button>
-            <button onclick="loadData('30d'); setActive(this)" class="btn btn-ghost btn-sm">30d</button>
-        </div>
+<div class="page-header">
+    <div>
+        <a href="/" class="eyebrow">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" style="width:0.85rem;height:0.85rem"><path d="M15 18l-6-6 6-6"/></svg>
+            All tenants
+        </a>
+        <h1 class="page-title">Usage · {{.Content.Tenant.Name}}</h1>
+        <p class="page-subtitle">Ingestion volume, request rate, and signal mix for this tenant.</p>
+    </div>
+    <div class="segmented" role="group" aria-label="Time range">
+        <button data-range="24h" onclick="loadData('24h', this)">24h</button>
+        <button data-range="7d" class="is-active" onclick="loadData('7d', this)">7d</button>
+        <button data-range="30d" onclick="loadData('30d', this)">30d</button>
+    </div>
+</div>
+
+<div class="stat-grid">
+    <div class="stat">
+        <div class="stat-label">Total requests</div>
+        <div class="stat-value" id="stat-requests">—</div>
+    </div>
+    <div class="stat">
+        <div class="stat-label">Data ingested</div>
+        <div class="stat-value" id="stat-volume">—</div>
+    </div>
+    <div class="stat">
+        <div class="stat-label">Signal types</div>
+        <div class="stat-value" id="stat-signals">—</div>
     </div>
 </div>
 
@@ -21,49 +38,98 @@
 <div class="grid grid-cols-1 lg:grid-cols-2 gap-4 mb-6">
     <div class="card">
         <div class="card-header">
-            <span class="text-sm font-semibold">Requests Over Time</span>
+            <span class="text-sm font-semibold">Requests over time</span>
         </div>
         <div class="card-body">
-            <canvas id="requestsChart" class="h-[200px]"></canvas>
+            <div class="chart-wrap"><canvas id="requestsChart"></canvas></div>
         </div>
     </div>
     <div class="card">
         <div class="card-header">
-            <span class="text-sm font-semibold">Data Volume Over Time</span>
+            <span class="text-sm font-semibold">Data volume over time</span>
         </div>
         <div class="card-body">
-            <canvas id="volumesChart" class="h-[200px]"></canvas>
+            <div class="chart-wrap"><canvas id="volumesChart"></canvas></div>
         </div>
     </div>
 </div>
 <div class="card mb-6">
     <div class="card-header">
-        <span class="text-sm font-semibold">Signal Type Breakdown</span>
+        <span class="text-sm font-semibold">Signal type breakdown</span>
     </div>
     <div class="card-body">
-        <canvas id="signalsChart" class="h-[200px]"></canvas>
+        <div class="chart-wrap"><canvas id="signalsChart"></canvas></div>
     </div>
 </div>
 
 <script src="/static/chart.umd.min.js"></script>
 <script>
-Chart.defaults.color = '#8b90a0';
-Chart.defaults.borderColor = '#1f2340';
+// Pull the live palette from CSS custom properties so charts always match the theme.
+const css = getComputedStyle(document.documentElement);
+const c = function(name, fallback) { return (css.getPropertyValue(name) || fallback).trim(); };
+const COL = {
+    accent:    c('--accent', '#7c8bff'),
+    success:   c('--success', '#3ddc97'),
+    warning:   c('--warning', '#f5b544'),
+    danger:    c('--danger', '#ff6b6b'),
+    grid:      c('--border', '#232a3d'),
+    text:      c('--fg-secondary', '#93a0b8'),
+    surface:   c('--bg-surface', '#141926'),
+};
+const PALETTE = [COL.accent, COL.success, COL.warning, COL.danger, '#22d3ee', '#c084fc'];
+
+Chart.defaults.color = COL.text;
+Chart.defaults.borderColor = COL.grid;
+Chart.defaults.font.family = "'Inter', system-ui, sans-serif";
+Chart.defaults.plugins.tooltip.backgroundColor = c('--bg-elevated', '#1f2635');
+Chart.defaults.plugins.tooltip.borderColor = c('--border-light', '#313a53');
+Chart.defaults.plugins.tooltip.borderWidth = 1;
+Chart.defaults.plugins.tooltip.padding = 10;
+Chart.defaults.plugins.tooltip.cornerRadius = 8;
+Chart.defaults.plugins.tooltip.titleColor = c('--fg-primary', '#e6e9f2');
+Chart.defaults.plugins.legend.display = false;
 
 let requestsChart, volumesChart, signalsChart;
 const tenantId = {{.Content.Tenant.ID}};
 
-async function loadData(range) {
+function humanBytes(n) {
+    if (!n) return '0 B';
+    const u = ['B', 'KB', 'MB', 'GB', 'TB'];
+    let i = 0;
+    while (n >= 1024 && i < u.length - 1) { n /= 1024; i++; }
+    return (i === 0 ? n : n.toFixed(1)) + ' ' + u[i];
+}
+function humanNum(n) {
+    if (n >= 1e6) return (n / 1e6).toFixed(1) + 'M';
+    if (n >= 1e3) return (n / 1e3).toFixed(1) + 'K';
+    return String(n);
+}
+
+async function loadData(range, btn) {
+    if (btn) {
+        btn.parentElement.querySelectorAll('button').forEach(function(b) { b.classList.remove('is-active'); });
+        btn.classList.add('is-active');
+    }
     const resp = await fetch('/tenants/' + tenantId + '/usage/data?range=' + range);
     const data = await resp.json();
+    renderStats(data);
     renderCharts(data);
 }
 
-function setActive(btn) {
-    btn.parentElement.querySelectorAll('button').forEach(function(b) {
-        b.classList.remove('bg-input');
-    });
-    btn.classList.add('bg-input');
+function renderStats(data) {
+    const reqTotal = (data.requests || []).reduce(function(a, r) { return a + (r.count || 0); }, 0);
+    const volTotal = (data.volumes || []).reduce(function(a, v) { return a + (v.bytes || 0); }, 0);
+    const sigCount = (data.signal_types || []).filter(function(s) { return s.count > 0; }).length;
+    document.getElementById('stat-requests').textContent = humanNum(reqTotal);
+    document.getElementById('stat-volume').innerHTML = humanBytes(volTotal);
+    document.getElementById('stat-signals').textContent = sigCount || '0';
+}
+
+function areaGradient(ctx, hex) {
+    const g = ctx.createLinearGradient(0, 0, 0, 220);
+    g.addColorStop(0, hex + '55');
+    g.addColorStop(1, hex + '00');
+    return g;
 }
 
 function renderCharts(data) {
@@ -76,25 +142,30 @@ function renderCharts(data) {
         data: {
             labels: data.requests.map(function(r) { return r.label; }),
             datasets: [{ label: 'Requests', data: data.requests.map(function(r) { return r.count; }),
-                backgroundColor: '#5470f0', borderRadius: 4 }]
+                backgroundColor: COL.accent, hoverBackgroundColor: COL.accent, borderRadius: 4, maxBarThickness: 34 }]
         },
         options: {
-            responsive: true,
-            scales: { x: { grid: { display: false } }, y: { grid: { color: '#1f2340' } } }
+            responsive: true, maintainAspectRatio: false,
+            scales: { x: { grid: { display: false }, ticks: { maxRotation: 0, autoSkipPadding: 12 } },
+                      y: { beginAtZero: true, grid: { color: COL.grid }, ticks: { callback: humanNum } } }
         }
     });
 
-    volumesChart = new Chart(document.getElementById('volumesChart'), {
+    const vctx = document.getElementById('volumesChart').getContext('2d');
+    volumesChart = new Chart(vctx, {
         type: 'line',
         data: {
             labels: data.volumes.map(function(v) { return v.label; }),
-            datasets: [{ label: 'Bytes', data: data.volumes.map(function(v) { return v.bytes; }),
-                borderColor: '#34d399', backgroundColor: 'rgba(52,211,153,0.1)',
-                fill: true, tension: 0.3 }]
+            datasets: [{ label: 'Volume', data: data.volumes.map(function(v) { return v.bytes; }),
+                borderColor: COL.success, backgroundColor: areaGradient(vctx, COL.success),
+                borderWidth: 2, fill: true, tension: 0.35, pointRadius: 0, pointHoverRadius: 4,
+                pointHoverBackgroundColor: COL.success }]
         },
         options: {
-            responsive: true,
-            scales: { x: { grid: { display: false } }, y: { grid: { color: '#1f2340' } } }
+            responsive: true, maintainAspectRatio: false,
+            plugins: { tooltip: { callbacks: { label: function(i) { return humanBytes(i.parsed.y); } } } },
+            scales: { x: { grid: { display: false }, ticks: { maxRotation: 0, autoSkipPadding: 12 } },
+                      y: { beginAtZero: true, grid: { color: COL.grid }, ticks: { callback: humanBytes } } }
         }
     });
 
@@ -103,12 +174,11 @@ function renderCharts(data) {
         data: {
             labels: data.signal_types.map(function(s) { return s.type; }),
             datasets: [{ data: data.signal_types.map(function(s) { return s.count; }),
-                backgroundColor: ['#5470f0','#34d399','#fbbf24','#f87171','#8b90a0','#06b6d4'],
-                borderColor: '#141620' }]
+                backgroundColor: PALETTE, borderColor: COL.surface, borderWidth: 3, hoverOffset: 6 }]
         },
         options: {
-            responsive: true,
-            plugins: { legend: { position: 'bottom', labels: { padding: 16 } } }
+            responsive: true, maintainAspectRatio: false, cutout: '62%',
+            plugins: { legend: { display: true, position: 'bottom', labels: { padding: 16, usePointStyle: true, pointStyle: 'circle' } } }
         }
     });
 }

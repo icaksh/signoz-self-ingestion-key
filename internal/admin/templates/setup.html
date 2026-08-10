@@ -1,12 +1,15 @@
 {{define "setup"}}
 {{template "base" .}}
-<div class="flex items-center justify-center" style="min-height:60vh">
+<div class="flex flex-col items-center justify-center" style="min-height:64vh">
+    <div class="w-full max-w-sm mb-6 text-center">
+        <span class="nav-brand-mark mx-auto" aria-hidden="true" style="width:2.75rem;height:2.75rem;border-radius:0.75rem">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" style="width:1.5rem;height:1.5rem"><path d="M4 12h3l2-6 4 12 2-6h5"/></svg>
+        </span>
+        <h1 class="text-xl font-bold mt-4">Set up your admin account</h1>
+        <p class="text-sm text-secondary mt-1">This one-time step creates the first user who can manage the proxy.</p>
+    </div>
     <div class="card w-full max-w-sm">
-        <div class="card-header">
-            <span class="font-semibold">Create Admin Account</span>
-        </div>
         <div class="card-body">
-            <p class="text-sm text-secondary mb-4">This is the first-time setup. Create the initial admin user.</p>
             <form hx-post="/setup" hx-target="this" hx-swap="outerHTML">
                 <div class="mb-4">
                     <label for="username">Username</label>
@@ -17,7 +20,7 @@
                     <input type="password" id="password" name="password" required
                         minlength="12" placeholder="Min 12 characters">
                 </div>
-                <button type="submit" class="btn btn-primary w-full">Create Account</button>
+                <button type="submit" class="btn btn-primary w-full">Create account</button>
             </form>
         </div>
     </div>

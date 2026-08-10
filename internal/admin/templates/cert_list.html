@@ -1,12 +1,19 @@
 {{define "cert_list"}}
 {{template "base" .}}
-<div class="mb-6 flex items-center justify-between">
+<div class="page-header">
     <div>
-        <h1 class="text-xl font-bold">Certificates: {{.Content.Tenant.Name}}</h1>
-        <a href="/" class="text-sm text-secondary hover:text-accent transition-colors">&larr; Back to tenants</a>
+        <a href="/" class="eyebrow">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" style="width:0.85rem;height:0.85rem"><path d="M15 18l-6-6 6-6"/></svg>
+            All tenants
+        </a>
+        <h1 class="page-title">Certificates · {{.Content.Tenant.Name}}</h1>
+        <p class="page-subtitle">Client certificates authenticate this tenant's syslog-over-mTLS ingestion.</p>
     </div>
     {{if .Content.CAEnabled}}
-    <a href="/tenants/{{.Content.Tenant.ID}}/certificates/new" class="btn btn-primary btn-sm">Issue Certificate</a>
+    <a href="/tenants/{{.Content.Tenant.ID}}/certificates/new" class="btn btn-primary btn-sm">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round"><path d="M12 5v14M5 12h14"/></svg>
+        Issue certificate
+    </a>
     {{end}}
 </div>
 {{if not .Content.CAEnabled}}
