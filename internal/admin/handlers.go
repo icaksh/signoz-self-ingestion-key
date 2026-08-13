@@ -79,10 +79,14 @@ func (h *Handlers) renderPage(w http.ResponseWriter, r *http.Request, name strin
 func (h *Handlers) renderError(w http.ResponseWriter, r *http.Request, status int, title, detail string) {
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	w.WriteHeader(status)
+	// error_page reads .Content.StatusCode/.Title/.Detail — the data must be
+	// wrapped under "Content" exactly like renderPage wraps page payloads.
 	data := map[string]any{
-		"StatusCode":    status,
-		"Title":         title,
-		"Detail":        detail,
+		"Content": map[string]any{
+			"StatusCode": status,
+			"Title":      title,
+			"Detail":     detail,
+		},
 		"ExpiringCerts": 0,
 	}
 	if err := h.tmpl.ExecuteTemplate(w, "error_page", data); err != nil {
@@ -181,7 +185,10 @@ func (h *Handlers) Update(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	tenant, _ := h.store.LookupTenantByID(r.Context(), id)
-	h.render(w, "tenant_row", map[string]any{"Tenant": tenant, "ExpiringCount": 0})
+	// Preserve the real expiring-cert count: a row swap must not reset the
+	// badge to zero when certificates are actually expiring.
+	expiringMap, _ := h.store.ExpiringCertsByTenant(r.Context(), 168) // 7 days
+	h.render(w, "tenant_row", map[string]any{"Tenant": tenant, "ExpiringCount": expiringMap[id]})
 }
 
 func (h *Handlers) Delete(w http.ResponseWriter, r *http.Request) {
@@ -208,7 +215,8 @@ func (h *Handlers) RegenerateKey(w http.ResponseWriter, r *http.Request) {
 	tenant.APIKey = newKey
 	tenant.KeyPrefix = newKey[:12]
 	// Full plaintext key returned once in the response body.
-	h.render(w, "tenant_row", map[string]any{"Tenant": tenant, "ExpiringCount": 0})
+	expiringMap, _ := h.store.ExpiringCertsByTenant(r.Context(), 168) // 7 days
+	h.render(w, "tenant_row", map[string]any{"Tenant": tenant, "ExpiringCount": expiringMap[id]})
 }
 
 func (h *Handlers) UsagePage(w http.ResponseWriter, r *http.Request) {

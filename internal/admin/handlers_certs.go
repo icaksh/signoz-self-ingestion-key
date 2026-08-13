@@ -159,10 +159,10 @@ func (h *Handlers) CertificateIssueWithKeygen(w http.ResponseWriter, r *http.Req
 
 	w.Header().Set("Content-Type", "text/html")
 	_, _ = w.Write([]byte(fmt.Sprintf(`
-<div id="download-link" class="mb-4 rounded-lg border border-emerald-500/30 bg-emerald-950/30 p-4">
-    <p class="text-sm font-semibold text-emerald-300">Certificate Issued</p>
-    <p class="mb-3 text-xs text-emerald-400/70">Download link valid for 10 minutes. The private key will not be shown again.</p>
-    <a href="%s" class="inline-block rounded-lg bg-emerald-600 px-4 py-2 text-sm font-semibold text-white hover:bg-emerald-500 transition-colors">Download Bundle</a>
+<div id="download-link" class="download-banner">
+    <p class="download-banner-title">Certificate Issued</p>
+    <p class="download-banner-detail">Download link valid for 10 minutes. The private key will not be shown again.</p>
+    <a href="%s" class="btn btn-tinted btn-sm">Download Bundle</a>
 </div>`, template.HTMLEscapeString(downloadURL))))
 }
 
@@ -257,10 +257,10 @@ func (h *Handlers) CertificateRenew(w http.ResponseWriter, r *http.Request) {
 
 	w.Header().Set("Content-Type", "text/html")
 	_, _ = w.Write([]byte(fmt.Sprintf(`
-<div id="download-link" class="mb-4 rounded-lg border border-emerald-500/30 bg-emerald-950/30 p-4">
-    <p class="text-sm font-semibold text-emerald-300">Certificate Renewed</p>
-    <p class="mb-3 text-xs text-emerald-400/70">New key + cert. Download link valid for 10 minutes.</p>
-    <a href="%s" class="inline-block rounded-lg bg-emerald-600 px-4 py-2 text-sm font-semibold text-white hover:bg-emerald-500 transition-colors">Download Bundle</a>
+<div id="download-link" class="download-banner">
+    <p class="download-banner-title">Certificate Renewed</p>
+    <p class="download-banner-detail">New key + cert. Download link valid for 10 minutes.</p>
+    <a href="%s" class="btn btn-tinted btn-sm">Download Bundle</a>
 </div>`, template.HTMLEscapeString(downloadURL))))
 }
 

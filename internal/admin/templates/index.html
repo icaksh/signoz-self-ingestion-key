@@ -1,48 +1,42 @@
 {{define "index"}}
 {{template "base" .}}
-<div class="page-header">
-    <div>
+<header class="page-header">
+    <div class="page-heading">
         <h1 class="page-title">Tenants</h1>
         <p class="page-subtitle">Each tenant gets an API key that authenticates its telemetry to the proxy.</p>
     </div>
     <button hx-get="/tenants/new" hx-target="#form-area" hx-swap="innerHTML"
-        class="btn btn-primary btn-sm">
+        class="btn btn-tinted btn-sm">
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round"><path d="M12 5v14M5 12h14"/></svg>
         New tenant
     </button>
-</div>
+</header>
 <div id="form-area"></div>
 
-<div class="card">
-    <table>
-        <thead>
-            <tr>
-                <th>Name</th>
-                <th>API Key</th>
-                <th>Certs</th>
-                <th>Status</th>
-                <th class="text-right">Actions</th>
-            </tr>
-        </thead>
-        <tbody id="tenant-list">
-            {{$expiring := .Content.ExpiringCerts}}
-            {{if .Content.Tenants}}
-                {{range .Content.Tenants}}
-                    {{template "tenant_row" dict "Tenant" . "ExpiringCount" (index $expiring .ID)}}
+<section class="grouped-list" aria-label="Tenants">
+    <h2 class="grouped-list-header">Tenants</h2>
+    <div class="grouped-list-body">
+        <table class="grouped-table">
+            <tbody id="tenant-list">
+                {{$expiring := .Content.ExpiringCerts}}
+                {{if .Content.Tenants}}
+                    {{range .Content.Tenants}}
+                        {{template "tenant_row" dict "Tenant" . "ExpiringCount" (index $expiring .ID)}}
+                    {{end}}
+                {{else}}
+                    <tr>
+                        <td>
+                            <div class="empty-state">
+                                <div class="empty-state-icon" aria-hidden="true">&#x1f4e1;</div>
+                                <div class="empty-state-title">No tenants configured</div>
+                                <div class="empty-state-text">Create your first tenant to start receiving telemetry data.</div>
+                            </div>
+                        </td>
+                    </tr>
                 {{end}}
-            {{else}}
-                <tr>
-                    <td colspan="5">
-                        <div class="empty-state">
-                            <div class="empty-state-icon">&#x1f4e1;</div>
-                            <div class="empty-state-title">No tenants configured</div>
-                            <div class="empty-state-text">Create your first tenant to start receiving telemetry data.</div>
-                        </div>
-                    </td>
-                </tr>
-            {{end}}
-        </tbody>
-    </table>
-</div>
+            </tbody>
+        </table>
+    </div>
+</section>
 {{template "base_end" .}}
 {{end}}

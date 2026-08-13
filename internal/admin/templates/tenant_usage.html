@@ -1,12 +1,12 @@
 {{define "tenant_usage"}}
 {{template "base" .}}
-<div class="page-header">
-    <div>
+<header class="page-header">
+    <div class="page-heading">
         <a href="/" class="eyebrow">
-            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" style="width:0.85rem;height:0.85rem"><path d="M15 18l-6-6 6-6"/></svg>
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M15 18l-6-6 6-6"/></svg>
             All tenants
         </a>
-        <h1 class="page-title">Usage · {{.Content.Tenant.Name}}</h1>
+        <h1 class="page-title">Usage &middot; {{.Content.Tenant.Name}}</h1>
         <p class="page-subtitle">Ingestion volume, request rate, and signal mix for this tenant.</p>
     </div>
     <div class="segmented" role="group" aria-label="Time range">
@@ -14,82 +14,86 @@
         <button data-range="7d" class="is-active" onclick="loadData('7d', this)">7d</button>
         <button data-range="30d" onclick="loadData('30d', this)">30d</button>
     </div>
-</div>
+</header>
 
 <div class="stat-grid">
     <div class="stat">
         <div class="stat-label">Total requests</div>
-        <div class="stat-value" id="stat-requests">—</div>
+        <div class="stat-value" id="stat-requests">&mdash;</div>
     </div>
     <div class="stat">
         <div class="stat-label">Data ingested</div>
-        <div class="stat-value" id="stat-volume">—</div>
+        <div class="stat-value" id="stat-volume">&mdash;</div>
     </div>
     <div class="stat">
         <div class="stat-label">Signal types</div>
-        <div class="stat-value" id="stat-signals">—</div>
+        <div class="stat-value" id="stat-signals">&mdash;</div>
     </div>
 </div>
 
-<div class="mb-6" hx-get="/tenants/{{.Content.Tenant.ID}}/quota" hx-trigger="load" hx-swap="innerHTML">
-    <div class="card p-4 text-sm text-secondary animate-pulse">Loading quota&hellip;</div>
+<div class="quota-slot" hx-get="/tenants/{{.Content.Tenant.ID}}/quota" hx-trigger="load" hx-swap="innerHTML">
+    <div class="card-loading">Loading quota&hellip;</div>
 </div>
 
-<div class="grid grid-cols-1 lg:grid-cols-2 gap-4 mb-6">
-    <div class="card">
-        <div class="card-header">
-            <span class="text-sm font-semibold">Requests over time</span>
-        </div>
-        <div class="card-body">
-            <div class="chart-wrap"><canvas id="requestsChart"></canvas></div>
-        </div>
-    </div>
-    <div class="card">
-        <div class="card-header">
-            <span class="text-sm font-semibold">Data volume over time</span>
-        </div>
-        <div class="card-body">
-            <div class="chart-wrap"><canvas id="volumesChart"></canvas></div>
-        </div>
-    </div>
+<div class="chart-grid">
+    <section class="chart-card">
+        <h2 class="chart-card-title">Requests over time</h2>
+        <div class="chart-wrap"><canvas id="requestsChart" aria-label="Requests over time" role="img"></canvas></div>
+    </section>
+    <section class="chart-card">
+        <h2 class="chart-card-title">Data volume over time</h2>
+        <div class="chart-wrap"><canvas id="volumesChart" aria-label="Data volume over time" role="img"></canvas></div>
+    </section>
 </div>
-<div class="card mb-6">
-    <div class="card-header">
-        <span class="text-sm font-semibold">Signal type breakdown</span>
-    </div>
-    <div class="card-body">
-        <div class="chart-wrap"><canvas id="signalsChart"></canvas></div>
-    </div>
-</div>
+<section class="chart-card chart-card-full">
+    <h2 class="chart-card-title">Signal type breakdown</h2>
+    <div class="chart-wrap"><canvas id="signalsChart" aria-label="Signal type breakdown" role="img"></canvas></div>
+</section>
 
 <script src="/static/chart.umd.min.js"></script>
 <script>
-// Pull the live palette from CSS custom properties so charts always match the theme.
-const css = getComputedStyle(document.documentElement);
-const c = function(name, fallback) { return (css.getPropertyValue(name) || fallback).trim(); };
-const COL = {
-    accent:    c('--accent', '#7c8bff'),
-    success:   c('--success', '#3ddc97'),
-    warning:   c('--warning', '#f5b544'),
-    danger:    c('--danger', '#ff6b6b'),
-    grid:      c('--border', '#232a3d'),
-    text:      c('--fg-secondary', '#93a0b8'),
-    surface:   c('--bg-surface', '#141926'),
-};
-const PALETTE = [COL.accent, COL.success, COL.warning, COL.danger, '#22d3ee', '#c084fc'];
+// Live palette: read CSS custom properties so charts always match the
+// active appearance (light or dark). Re-read + re-render on scheme change.
+const rootCss = getComputedStyle(document.documentElement);
+const v = function(name, fallback) { return (rootCss.getPropertyValue(name) || fallback).trim(); };
+function readPalette() {
+    return {
+        accent:  v('--tint', '#4f46e5'),
+        success: v('--success', '#1f8b4c'),
+        warning: v('--warning', '#b25000'),
+        danger:  v('--danger', '#d70015'),
+        grid:    v('--separator', 'rgba(60,60,67,0.29)'),
+        text:    v('--fg-secondary', '#6e6e73'),
+        surface: v('--bg-surface', '#ffffff'),
+    };
+}
+let COL = readPalette();
+function readPaletteExtra() {
+    return [
+        v('--chart-1', COL.accent),
+        v('--chart-2', '#0d9488'),
+        v('--chart-3', '#d97706'),
+        v('--chart-4', '#db2777'),
+        v('--chart-5', '#7c3aed'),
+        v('--chart-6', '#0891b2'),
+    ];
+}
+let PALETTE = readPaletteExtra();
 
 Chart.defaults.color = COL.text;
 Chart.defaults.borderColor = COL.grid;
-Chart.defaults.font.family = "'Inter', system-ui, sans-serif";
-Chart.defaults.plugins.tooltip.backgroundColor = c('--bg-elevated', '#1f2635');
-Chart.defaults.plugins.tooltip.borderColor = c('--border-light', '#313a53');
+Chart.defaults.font.family = "system-ui, -apple-system, 'Segoe UI', sans-serif";
+Chart.defaults.plugins.tooltip.backgroundColor = v('--bg-elevated', '#ffffff');
+Chart.defaults.plugins.tooltip.borderColor = v('--separator', 'rgba(60,60,67,0.29)');
 Chart.defaults.plugins.tooltip.borderWidth = 1;
 Chart.defaults.plugins.tooltip.padding = 10;
-Chart.defaults.plugins.tooltip.cornerRadius = 8;
-Chart.defaults.plugins.tooltip.titleColor = c('--fg-primary', '#e6e9f2');
+Chart.defaults.plugins.tooltip.cornerRadius = 10;
+Chart.defaults.plugins.tooltip.titleColor = v('--fg-primary', '#1c1c1e');
 Chart.defaults.plugins.legend.display = false;
 
 let requestsChart, volumesChart, signalsChart;
+let lastData = null;
+let currentRange = '7d';
 const tenantId = {{.Content.Tenant.ID}};
 
 function humanBytes(n) {
@@ -110,8 +114,10 @@ async function loadData(range, btn) {
         btn.parentElement.querySelectorAll('button').forEach(function(b) { b.classList.remove('is-active'); });
         btn.classList.add('is-active');
     }
+    currentRange = range;
     const resp = await fetch('/tenants/' + tenantId + '/usage/data?range=' + range);
     const data = await resp.json();
+    lastData = data;
     renderStats(data);
     renderCharts(data);
 }
@@ -121,7 +127,7 @@ function renderStats(data) {
     const volTotal = (data.volumes || []).reduce(function(a, v) { return a + (v.bytes || 0); }, 0);
     const sigCount = (data.signal_types || []).filter(function(s) { return s.count > 0; }).length;
     document.getElementById('stat-requests').textContent = humanNum(reqTotal);
-    document.getElementById('stat-volume').innerHTML = humanBytes(volTotal);
+    document.getElementById('stat-volume').textContent = humanBytes(volTotal);
     document.getElementById('stat-signals').textContent = sigCount || '0';
 }
 
@@ -142,7 +148,7 @@ function renderCharts(data) {
         data: {
             labels: data.requests.map(function(r) { return r.label; }),
             datasets: [{ label: 'Requests', data: data.requests.map(function(r) { return r.count; }),
-                backgroundColor: COL.accent, hoverBackgroundColor: COL.accent, borderRadius: 4, maxBarThickness: 34 }]
+                backgroundColor: COL.accent, hoverBackgroundColor: COL.accent, borderRadius: 5, maxBarThickness: 34 }]
         },
         options: {
             responsive: true, maintainAspectRatio: false,
@@ -178,12 +184,28 @@ function renderCharts(data) {
         },
         options: {
             responsive: true, maintainAspectRatio: false, cutout: '62%',
-            plugins: { legend: { display: true, position: 'bottom', labels: { padding: 16, usePointStyle: true, pointStyle: 'circle' } } }
+            plugins: { legend: { display: true, position: 'bottom', labels: { padding: 16, usePointStyle: true, pointStyle: 'circle', color: COL.text } } }
         }
     });
 }
 
-loadData('7d');
+// Re-read the palette and re-render when the OS appearance changes, keeping
+// the currently selected range.
+const schemeMQ = window.matchMedia('(prefers-color-scheme: dark)');
+function applyAppearance() {
+    COL = readPalette();
+    PALETTE = readPaletteExtra();
+    Chart.defaults.color = COL.text;
+    Chart.defaults.borderColor = COL.grid;
+    if (lastData) renderCharts(lastData);
+}
+if (schemeMQ.addEventListener) {
+    schemeMQ.addEventListener('change', applyAppearance);
+} else if (schemeMQ.addListener) {
+    schemeMQ.addListener(applyAppearance);
+}
+
+loadData(currentRange);
 </script>
 {{template "base_end" .}}
 {{end}}

@@ -1,30 +1,30 @@
 {{define "login"}}
-{{template "base" .}}
-<div class="flex flex-col items-center justify-center" style="min-height:64vh">
-    <div class="w-full max-w-sm mb-6 text-center">
-        <span class="nav-brand-mark mx-auto" aria-hidden="true" style="width:2.75rem;height:2.75rem;border-radius:0.75rem">
-            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" style="width:1.5rem;height:1.5rem"><path d="M4 12h3l2-6 4 12 2-6h5"/></svg>
+{{template "auth" .}}
+<div class="auth-card-wrap">
+    <div class="auth-brand">
+        <span class="nav-brand-mark auth-brand-mark" aria-hidden="true">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round">
+                <path d="M4 12h3l2-6 4 12 2-6h5"/>
+            </svg>
         </span>
-        <h1 class="text-xl font-bold mt-4">Welcome back</h1>
-        <p class="text-sm text-secondary mt-1">Sign in to the OTLP Proxy admin dashboard.</p>
+        <h1 class="auth-title">Welcome back</h1>
+        <p class="auth-subtitle">Sign in to the OTLP Proxy admin dashboard.</p>
     </div>
-    <div class="card w-full max-w-sm">
-        <div class="card-body">
-            <form hx-post="/login" hx-target="this" hx-swap="outerHTML">
-                <div class="mb-4">
-                    <label for="username">Username</label>
-                    <input type="text" id="username" name="username" autocomplete="username"
-                        required autofocus>
-                </div>
-                <div class="mb-4">
-                    <label for="password">Password</label>
-                    <input type="password" id="password" name="password" autocomplete="current-password"
-                        required>
-                </div>
-                <button type="submit" class="btn btn-primary w-full">Sign in</button>
-            </form>
-        </div>
+    <div class="auth-card">
+        <form method="post" action="/login" class="auth-form">
+            <div class="form-field">
+                <label for="username">Username</label>
+                <input type="text" id="username" name="username" autocomplete="username"
+                    required autofocus>
+            </div>
+            <div class="form-field">
+                <label for="password">Password</label>
+                <input type="password" id="password" name="password" autocomplete="current-password"
+                    required>
+            </div>
+            <button type="submit" class="btn btn-tinted btn-block">Sign in</button>
+        </form>
     </div>
 </div>
-{{template "base_end" .}}
+{{template "auth_end" .}}
 {{end}}

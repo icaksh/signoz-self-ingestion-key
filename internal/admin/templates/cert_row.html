@@ -1,56 +1,54 @@
 {{define "cert_row"}}
 <tr id="cert-{{.Certificate.ID}}">
     <td>
-        <div class="fingerprint" title="{{.Certificate.FingerprintSHA256}}">
-            {{fingerprintFormat .Certificate.FingerprintSHA256}}
-        </div>
-    </td>
-    <td>
-        <code class="text-xs text-secondary">{{fingerprintFormat .Certificate.SerialNumber}}</code>
-    </td>
-    <td>{{.Certificate.SubjectCN}}</td>
-    <td class="text-nowrap">
-        {{formatTime .Certificate.NotAfter}}
-        {{if expiringSoon .Certificate.NotAfter .ExpiryWarnDays}}
-        <div class="text-xs text-warning">{{daysUntil .Certificate.NotAfter}}d remaining</div>
-        {{end}}
-    </td>
-    <td>
-        {{if .Certificate.RevokedAt.Valid}}
-        <span class="badge badge-danger">Revoked</span>
-        {{else if expired .Certificate.NotAfter}}
-        <span class="badge badge-danger">Expired</span>
-        {{else if expiringSoon .Certificate.NotAfter .ExpiryWarnDays}}
-        <span class="badge badge-warning">Expiring</span>
-        {{else}}
-        <span class="badge badge-success">Valid</span>
-        {{end}}
-    </td>
-    <td>
-        {{if .Certificate.LastSeenAt.Valid}}
-        <span class="text-xs text-secondary">{{formatTime .Certificate.LastSeenAt.Time}}</span>
-        {{else}}
-        <span class="text-xs text-secondary">&mdash;</span>
-        {{end}}
-    </td>
-    <td>
-        <div class="flex items-center justify-end gap-1 flex-wrap">
-            {{if .CAEnabled}}
-            {{if not .Certificate.RevokedAt.Valid}}
-            <button hx-post="/tenants/{{.TenantID}}/certificates/{{.Certificate.ID}}/renew"
-                hx-target="#cert-{{.Certificate.ID}}" hx-swap="outerHTML"
-                hx-confirm="true" data-confirm-name="cert {{fingerprintShort .Certificate.FingerprintSHA256}}"
-                class="btn btn-ghost btn-sm">Renew</button>
-            {{end}}
-            {{end}}
-            {{if not .Certificate.RevokedAt.Valid}}
-            <button hx-post="/tenants/{{.TenantID}}/certificates/{{.Certificate.ID}}/revoke"
-                hx-target="#cert-{{.Certificate.ID}}" hx-swap="outerHTML"
-                hx-confirm="true" data-confirm-name="cert {{fingerprintShort .Certificate.FingerprintSHA256}}"
-                class="btn btn-ghost btn-sm" style="color:var(--danger)">Revoke</button>
-            {{end}}
-            <a href="/tenants/{{.TenantID}}/certificates/{{.Certificate.ID}}/download"
-                class="btn btn-ghost btn-sm">Download</a>
+        <div class="cert-row">
+            <div class="cert-main">
+                <div class="cert-subject">
+                    <span class="cert-state-dot cert-state-{{if .Certificate.RevokedAt.Valid}}revoked{{else if expired .Certificate.NotAfter}}expired{{else if expiringSoon .Certificate.NotAfter .ExpiryWarnDays}}expiring{{else}}valid{{end}}" aria-hidden="true"></span>
+                    <span class="cert-cn">{{.Certificate.SubjectCN}}</span>
+                </div>
+                <div class="cert-fingerprint" title="{{.Certificate.FingerprintSHA256}}">
+                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M6 9V4h12v5M6 15v5h12v-5M4 9h16M4 15h16"/></svg>
+                    <code>{{fingerprintFormat .Certificate.FingerprintSHA256}}</code>
+                </div>
+                <div class="cert-meta">
+                    <span class="cert-meta-item"><span class="muted">Serial</span> <code>{{fingerprintFormat .Certificate.SerialNumber}}</code></span>
+                    <span class="cert-meta-item"><span class="muted">Expires</span> {{formatTime .Certificate.NotAfter}}</span>
+                    <span class="cert-meta-item"><span class="muted">Last seen</span> {{if .Certificate.LastSeenAt.Valid}}{{formatTime .Certificate.LastSeenAt.Time}}{{else}}&mdash;{{end}}</span>
+                    {{if expiringSoon .Certificate.NotAfter .ExpiryWarnDays}}
+                    <span class="cert-meta-item cert-meta-warn">{{daysUntil .Certificate.NotAfter}}d remaining</span>
+                    {{end}}
+                </div>
+            </div>
+            <div class="cert-side">
+                {{if .Certificate.RevokedAt.Valid}}
+                <span class="badge badge-danger">Revoked</span>
+                {{else if expired .Certificate.NotAfter}}
+                <span class="badge badge-danger">Expired</span>
+                {{else if expiringSoon .Certificate.NotAfter .ExpiryWarnDays}}
+                <span class="badge badge-warning">Expiring</span>
+                {{else}}
+                <span class="badge badge-success">Valid</span>
+                {{end}}
+                <div class="cert-actions">
+                    {{if .CAEnabled}}
+                    {{if not .Certificate.RevokedAt.Valid}}
+                    <button hx-post="/tenants/{{.TenantID}}/certificates/{{.Certificate.ID}}/renew"
+                        hx-target="#cert-{{.Certificate.ID}}" hx-swap="outerHTML"
+                        hx-confirm="true" data-confirm-name="cert {{fingerprintShort .Certificate.FingerprintSHA256}}"
+                        class="btn btn-text btn-sm">Renew</button>
+                    {{end}}
+                    {{end}}
+                    {{if not .Certificate.RevokedAt.Valid}}
+                    <button hx-post="/tenants/{{.TenantID}}/certificates/{{.Certificate.ID}}/revoke"
+                        hx-target="#cert-{{.Certificate.ID}}" hx-swap="outerHTML"
+                        hx-confirm="true" data-confirm-name="cert {{fingerprintShort .Certificate.FingerprintSHA256}}"
+                        class="btn btn-text btn-text-danger btn-sm">Revoke</button>
+                    {{end}}
+                    <a href="/tenants/{{.TenantID}}/certificates/{{.Certificate.ID}}/download"
+                        class="btn btn-text btn-sm">Download</a>
+                </div>
+            </div>
         </div>
     </td>
 </tr>

@@ -1,17 +1,18 @@
 {{define "base"}}
 <!DOCTYPE html>
-<html lang="en" class="h-full bg-shell">
+<html lang="en">
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <meta name="color-scheme" content="dark">
-    <meta name="theme-color" content="#0b0e17">
+    <meta name="color-scheme" content="light dark">
+    <meta name="theme-color" media="(prefers-color-scheme: light)" content="#f5f5f7">
+    <meta name="theme-color" media="(prefers-color-scheme: dark)" content="#000000">
     <title>OTLP Proxy · Admin</title>
-    <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24'%3E%3Crect width='24' height='24' rx='6' fill='%236366f1'/%3E%3Cpath d='M6 12h2l2-5 4 10 2-5h2' fill='none' stroke='white' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E">
+    <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24'%3E%3Crect width='24' height='24' rx='6' fill='%234f46e5'/%3E%3Cpath d='M6 12h2l2-5 4 10 2-5h2' fill='none' stroke='white' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E">
     <link rel="stylesheet" href="/static/app.css">
     <script src="/static/htmx.min.js"></script>
 </head>
-<body class="h-full">
+<body>
     <div id="htmx-progress"></div>
     <nav class="nav">
         <div class="nav-inner">
@@ -24,15 +25,23 @@
                 <span class="nav-brand-name">OTLP Proxy</span>
                 <span class="nav-badge">Admin</span>
             </a>
-            <div class="nav-links">
+            <button id="nav-toggle" class="nav-toggle" type="button" aria-label="Toggle navigation" aria-expanded="false" aria-controls="nav-links">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round">
+                    <path d="M4 7h16M4 12h16M4 17h16"/>
+                </svg>
+            </button>
+            <div class="nav-links" id="nav-links">
                 <a href="/" class="nav-link" data-nav="tenants">Tenants</a>
                 <a href="/users" class="nav-link" data-nav="users">Users</a>
                 {{if gt .ExpiringCerts 0}}
-                <span class="nav-cert-badge" title="{{.ExpiringCerts}} certificate(s) expiring within 7 days">{{.ExpiringCerts}}</span>
+                <span class="nav-cert-badge" title="{{.ExpiringCerts}} certificate(s) expiring within 7 days">
+                    <span class="nav-cert-badge-count">{{.ExpiringCerts}}</span>
+                    <span class="nav-cert-badge-label">expiring</span>
+                </span>
                 {{end}}
                 <span class="nav-sep" aria-hidden="true"></span>
-                <form hx-post="/logout" hx-target="body" class="inline">
-                    <button class="nav-link" style="color:var(--danger)">Log out</button>
+                <form method="post" action="/logout" class="nav-logout">
+                    <button class="nav-link nav-link-logout" type="submit">Log out</button>
                 </form>
             </div>
         </div>
@@ -65,6 +74,23 @@
         });
     })();
 
+    // Mobile nav toggle — collapsed menu, no lost controls.
+    (function() {
+        var toggle = document.getElementById('nav-toggle');
+        var links = document.getElementById('nav-links');
+        if (!toggle || !links) return;
+        toggle.addEventListener('click', function() {
+            var open = links.classList.toggle('is-open');
+            toggle.setAttribute('aria-expanded', open ? 'true' : 'false');
+        });
+        links.addEventListener('click', function(e) {
+            if (e.target.closest('a, button')) {
+                links.classList.remove('is-open');
+                toggle.setAttribute('aria-expanded', 'false');
+            }
+        });
+    })();
+
     // Top loading bar driven by HTMX request lifecycle.
     document.body.addEventListener('htmx:beforeRequest', function() {
         document.body.classList.add('htmx-request-active');
@@ -82,34 +108,123 @@
 {{end}}
 
 {{define "confirm_overlay"}}
-<div id="confirm-overlay" class="confirm-overlay hidden">
-    <div class="confirm-dialog">
-        <div class="confirm-dialog-title">Confirm Action</div>
-        <div class="confirm-dialog-message" id="confirm-message"></div>
+<dialog id="confirm-overlay" class="confirm-dialog" role="alertdialog" aria-modal="true"
+    aria-labelledby="confirm-title" aria-describedby="confirm-message">
+    <div class="confirm-dialog-inner">
+        <h2 class="confirm-dialog-title" id="confirm-title">Confirm Action</h2>
+        <p class="confirm-dialog-message" id="confirm-message"></p>
         <div class="confirm-dialog-actions">
-            <button id="confirm-no" class="btn btn-ghost btn-sm" type="button">Cancel</button>
-            <button id="confirm-yes" class="btn btn-danger btn-sm" type="button">Yes, proceed</button>
+            <button id="confirm-no" class="btn btn-gray" type="button">Cancel</button>
+            <button id="confirm-yes" class="btn btn-danger" type="button">Yes, proceed</button>
         </div>
     </div>
-</div>
+</dialog>
 <script>
-document.body.addEventListener('htmx:confirm', function(evt) {
+(function() {
     var overlay = document.getElementById('confirm-overlay');
+    if (!overlay) return;
     var msgEl = document.getElementById('confirm-message');
-    var name = evt.target.getAttribute('data-confirm-name') || 'this item';
-    var action = (evt.target.textContent || '').trim() || 'Modify';
-    msgEl.innerHTML = action + ' <span class="confirm-dialog-object">' + name + '</span>? This cannot be undone.';
-    overlay.classList.remove('hidden');
-    evt.preventDefault();
+    var yesBtn = document.getElementById('confirm-yes');
+    var noBtn = document.getElementById('confirm-no');
+    var pending = null;      // the htmx event whose request is paused
+    var lastTrigger = null;  // the element that opened the dialog
 
-    document.getElementById('confirm-yes').onclick = function() {
-        overlay.classList.add('hidden');
-        evt.detail.issueRequest();
-    };
-    document.getElementById('confirm-no').onclick = function() {
-        overlay.classList.add('hidden');
-    };
-});
+    function buildMessage(name, action) {
+        msgEl.textContent = '';
+        msgEl.appendChild(document.createTextNode(action + ' '));
+        var span = document.createElement('span');
+        span.className = 'confirm-dialog-object';
+        span.textContent = name;
+        msgEl.appendChild(span);
+        msgEl.appendChild(document.createTextNode('? This cannot be undone.'));
+    }
+
+    // Restore focus after the dialog closes. The htmx swap may replace or
+    // remove the trigger, so fall back to a fresh element with the same id,
+    // then to the page heading. Prefer an interactive element inside the
+    // restored container.
+    function restoreFocus(trigger) {
+        var target = null;
+        if (trigger && document.contains(trigger)) {
+            target = trigger;
+        } else if (trigger && trigger.id && document.getElementById(trigger.id)) {
+            target = document.getElementById(trigger.id);
+        } else {
+            target = document.querySelector('main h1');
+        }
+        if (!target) return;
+        var focusable = (target.matches && target.matches('button, a, input, textarea, select, [tabindex]'))
+            ? target
+            : target.querySelector('button, a, input, textarea, select, [tabindex]');
+        if (focusable) {
+            focusable.focus({ preventScroll: true });
+        } else {
+            if (!target.getAttribute('tabindex')) target.setAttribute('tabindex', '-1');
+            target.focus({ preventScroll: true });
+        }
+    }
+
+    function restoreAfterSwap(trigger) {
+        var done = false;
+        function finish() {
+            if (done) return;
+            done = true;
+            document.body.removeEventListener('htmx:afterSwap', onSwap);
+            document.body.removeEventListener('htmx:responseError', onFail);
+            document.body.removeEventListener('htmx:sendError', onFail);
+            restoreFocus(trigger);
+        }
+        function onSwap() { finish(); }
+        function onFail() { finish(); }
+        document.body.addEventListener('htmx:afterSwap', onSwap);
+        document.body.addEventListener('htmx:responseError', onFail);
+        document.body.addEventListener('htmx:sendError', onFail);
+        // Safety net if none of the htmx events settle.
+        setTimeout(finish, 2000);
+    }
+
+    function closeDialog() {
+        if (overlay.open) overlay.close();
+        pending = null;
+    }
+
+    document.body.addEventListener('htmx:confirm', function(evt) {
+        var name = evt.target.getAttribute('data-confirm-name') || 'this item';
+        var action = (evt.target.textContent || '').trim() || 'Modify';
+        buildMessage(name, action);
+        pending = evt;
+        lastTrigger = evt.target;
+        evt.preventDefault();
+        if (!overlay.open) overlay.showModal();
+    });
+
+    yesBtn.addEventListener('click', function() {
+        var evt = pending;
+        var trigger = lastTrigger;
+        closeDialog();
+        lastTrigger = null;
+        if (evt) {
+            evt.detail.issueRequest();
+            restoreAfterSwap(trigger);
+        }
+    });
+    noBtn.addEventListener('click', function() {
+        var trigger = lastTrigger;
+        closeDialog();
+        lastTrigger = null;
+        restoreFocus(trigger);
+    });
+    // Escape closes the dialog natively; the paused request never fires
+    // because the close handler drops `pending`. Focus returns to the trigger.
+    overlay.addEventListener('cancel', function() {
+        var trigger = lastTrigger;
+        lastTrigger = null;
+        restoreFocus(trigger);
+    });
+    overlay.addEventListener('close', function() {
+        pending = null;
+    });
+})();
 </script>
 {{end}}
 
@@ -119,7 +234,31 @@ document.body.addEventListener('htmx:confirm', function(evt) {
     <div class="error-page-code">{{.Content.StatusCode}}</div>
     <h1 class="error-page-title">{{.Content.Title}}</h1>
     <p class="error-page-detail">{{.Content.Detail}}</p>
-    <a href="/" class="btn btn-primary">Return to dashboard</a>
+    <a href="/" class="btn btn-tinted">Return to dashboard</a>
 </div>
 {{template "base_end" .}}
+{{end}}
+
+{{define "auth"}}
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <meta name="color-scheme" content="light dark">
+    <meta name="theme-color" media="(prefers-color-scheme: light)" content="#f5f5f7">
+    <meta name="theme-color" media="(prefers-color-scheme: dark)" content="#000000">
+    <title>OTLP Proxy · Admin</title>
+    <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24'%3E%3Crect width='24' height='24' rx='6' fill='%234f46e5'/%3E%3Cpath d='M6 12h2l2-5 4 10 2-5h2' fill='none' stroke='white' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E">
+    <link rel="stylesheet" href="/static/app.css">
+    <script src="/static/htmx.min.js"></script>
+</head>
+<body class="auth-body">
+    <main class="auth-main">
+{{end}}
+
+{{define "auth_end"}}
+    </main>
+</body>
+</html>
 {{end}}

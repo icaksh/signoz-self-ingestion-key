@@ -1,43 +1,36 @@
 {{define "cert_list"}}
 {{template "base" .}}
-<div class="page-header">
-    <div>
+<header class="page-header">
+    <div class="page-heading">
         <a href="/" class="eyebrow">
-            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" style="width:0.85rem;height:0.85rem"><path d="M15 18l-6-6 6-6"/></svg>
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M15 18l-6-6 6-6"/></svg>
             All tenants
         </a>
-        <h1 class="page-title">Certificates · {{.Content.Tenant.Name}}</h1>
+        <h1 class="page-title">Certificates &middot; {{.Content.Tenant.Name}}</h1>
         <p class="page-subtitle">Client certificates authenticate this tenant's syslog-over-mTLS ingestion.</p>
     </div>
     {{if .Content.CAEnabled}}
-    <a href="/tenants/{{.Content.Tenant.ID}}/certificates/new" class="btn btn-primary btn-sm">
+    <a href="/tenants/{{.Content.Tenant.ID}}/certificates/new" class="btn btn-tinted btn-sm">
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round"><path d="M12 5v14M5 12h14"/></svg>
         Issue certificate
     </a>
     {{end}}
-</div>
+</header>
 {{if not .Content.CAEnabled}}
-<div class="alert alert-info mb-4">
-    CA integration is disabled &mdash; certificate issuance and renewal are unavailable.
-    Set <code>CA_ENABLED=true</code> plus the <code>CA_*</code> variables to enable it.
+<div class="notice notice-warning" role="note">
+    <span class="notice-icon" aria-hidden="true">&#x26a0;&#xfe0f;</span>
+    <div>
+        <p class="notice-title">CA integration is disabled</p>
+        <p class="notice-detail">Certificate issuance and renewal are unavailable. Set <code>CA_ENABLED=true</code> plus the <code>CA_*</code> variables to enable it.</p>
+    </div>
 </div>
 {{end}}
 <div id="form-area"></div>
 {{if .Content.Certificates}}
-<div class="card">
-    <div class="overflow-x-auto">
-        <table>
-            <thead>
-                <tr>
-                    <th>Fingerprint</th>
-                    <th>Serial</th>
-                    <th>Subject CN</th>
-                    <th>Expires</th>
-                    <th>Status</th>
-                    <th>Last Seen</th>
-                    <th class="text-right">Actions</th>
-                </tr>
-            </thead>
+<section class="grouped-list" aria-label="Certificates">
+    <h2 class="grouped-list-header">Certificates</h2>
+    <div class="grouped-list-body">
+        <table class="grouped-table">
             <tbody id="cert-list">
                 {{range .Content.Certificates}}
                     {{template "cert_row" (certRowData . $.Content.Tenant.ID $.Content.ExpiryWarnDays $.Content.CAEnabled)}}
@@ -45,18 +38,21 @@
             </tbody>
         </table>
     </div>
-</div>
+</section>
 {{else}}
-<div class="card">
-    <div class="empty-state">
-        <div class="empty-state-icon">&#x1f510;</div>
-        <div class="empty-state-title">No certificates issued</div>
-        <div class="empty-state-text">Issue a client certificate to enable syslog ingestion for this tenant.</div>
-        {{if .Content.CAEnabled}}
-        <a href="/tenants/{{.Content.Tenant.ID}}/certificates/new" class="btn btn-primary">Issue Certificate</a>
-        {{end}}
+<section class="grouped-list" aria-label="Certificates">
+    <h2 class="grouped-list-header">Certificates</h2>
+    <div class="grouped-list-body">
+        <div class="empty-state">
+            <div class="empty-state-icon" aria-hidden="true">&#x1f510;</div>
+            <div class="empty-state-title">No certificates issued</div>
+            <div class="empty-state-text">Issue a client certificate to enable syslog ingestion for this tenant.</div>
+            {{if .Content.CAEnabled}}
+            <a href="/tenants/{{.Content.Tenant.ID}}/certificates/new" class="btn btn-tinted">Issue Certificate</a>
+            {{end}}
+        </div>
     </div>
-</div>
+</section>
 {{end}}
 {{template "base_end" .}}
 {{end}}

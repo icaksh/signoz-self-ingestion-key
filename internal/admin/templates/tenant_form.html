@@ -1,47 +1,48 @@
 {{define "tenant_form"}}
-<div id="form-area-{{if .Tenant.ID}}edit{{else}}new{{end}}" class="card mb-6">
-    <div class="card-header">
-        <span class="font-semibold">{{if .Tenant.ID}}Edit{{else}}New{{end}} Tenant</span>
-        <button onclick="this.closest('.card').remove()" class="text-sm text-secondary hover:text-danger transition-colors">&times;</button>
+<div id="form-area-{{if .Tenant.ID}}edit{{else}}new{{end}}" class="form-card">
+    <div class="form-card-header">
+        <h3 class="form-card-title">{{if .Tenant.ID}}Edit{{else}}New{{end}} Tenant</h3>
+        <button onclick="this.closest('.form-card').remove()" class="form-card-close" type="button"
+            aria-label="Dismiss form">&times;</button>
     </div>
-    <div class="card-body">
+    <div class="form-card-body">
         <form hx-{{if .Tenant.ID}}put{{else}}post{{end}}="{{.Action}}" hx-target="{{.Target}}" hx-swap="{{.Swap}}">
-            <div class="grid grid-cols-2 gap-4 mb-4">
-                <div>
+            <div class="form-grid form-grid-2">
+                <div class="form-field">
                     <label for="name">Name</label>
                     <input type="text" id="name" name="name" value="{{.Tenant.Name}}" required
                         placeholder="e.g. hisv3-production">
                 </div>
-                <div>
+                <div class="form-field">
                     <label for="description">Description</label>
                     <input type="text" id="description" name="description" value="{{.Tenant.Description}}"
                         placeholder="Optional description">
                 </div>
             </div>
             {{if .Tenant.ID}}
-            <div class="mb-4">
-                <label class="flex items-center gap-2">
+            <div class="form-field">
+                <label class="checkbox-row">
                     <input type="checkbox" name="active" {{if .Tenant.Active}}checked{{end}}>
-                    <span class="text-sm">Active</span>
+                    <span>Active</span>
                 </label>
             </div>
             {{end}}
-            <fieldset class="mb-6">
-                <legend class="text-sm font-semibold text-secondary mb-3">Rate Limits (optional, leave empty for unlimited)</legend>
-                <div class="grid grid-cols-3 gap-4">
-                    <div>
+            <fieldset class="form-fieldset">
+                <legend>Rate Limits <span class="legend-note">(optional, leave empty for unlimited)</span></legend>
+                <div class="form-grid form-grid-3">
+                    <div class="form-field">
                         <label for="rate_limit_rps">Rate limit (rps)</label>
                         <input type="number" id="rate_limit_rps" name="rate_limit_rps" min="0"
                             value="{{if .Tenant.RateLimitRPS}}{{.Tenant.RateLimitRPS}}{{end}}"
                             placeholder="Unlimited">
                     </div>
-                    <div>
+                    <div class="form-field">
                         <label for="burst_bytes">Burst (bytes/s)</label>
                         <input type="number" id="burst_bytes" name="burst_bytes" min="0"
                             value="{{if .Tenant.BurstBytes}}{{.Tenant.BurstBytes}}{{end}}"
                             placeholder="Unlimited">
                     </div>
-                    <div>
+                    <div class="form-field">
                         <label for="daily_byte_quota">Daily Quota (MB)</label>
                         <input type="number" id="daily_byte_quota" name="daily_byte_quota" min="0"
                             value="{{if .Tenant.DailyByteQuota}}{{megaBytes .Tenant.DailyByteQuota}}{{end}}"
@@ -49,9 +50,9 @@
                     </div>
                 </div>
             </fieldset>
-            <div class="flex gap-2 justify-end">
-                <button type="button" onclick="this.closest('.card').remove()" class="btn btn-ghost btn-sm">Cancel</button>
-                <button type="submit" class="btn btn-primary btn-sm">{{if .Tenant.ID}}Save{{else}}Create{{end}}</button>
+            <div class="form-actions">
+                <button type="button" onclick="this.closest('.form-card').remove()" class="btn btn-gray btn-sm">Cancel</button>
+                <button type="submit" class="btn btn-tinted btn-sm">{{if .Tenant.ID}}Save{{else}}Create{{end}}</button>
             </div>
         </form>
     </div>

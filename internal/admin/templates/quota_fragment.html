@@ -4,25 +4,24 @@
 {{if gt $pct 90}}{{$color = "danger"}}
 {{else if gt $pct 70}}{{$color = "warning"}}{{end}}
 {{if gt .Quota 0}}
-<div class="card p-4">
-    <div class="flex items-center justify-between mb-2">
-        <span class="text-sm font-semibold">Daily Quota</span>
-        <span class="text-xs">
-            <span class="text-secondary">{{megaBytes .Used}} MB</span>
-            <span class="text-secondary"> / </span>
-            <span>{{megaBytes .Quota}} MB</span>
+<div class="quota-card">
+    <div class="quota-head">
+        <span class="quota-label">Daily Quota</span>
+        <span class="quota-values">
+            <span class="quota-used">{{megaBytes .Used}} MB</span>
+            <span class="quota-sep">/</span>
+            <span class="quota-total">{{megaBytes .Quota}} MB</span>
         </span>
     </div>
-    <div class="progress-track">
+    <div class="progress-track" role="progressbar" aria-valuemin="0" aria-valuemax="100" aria-valuenow="{{$pct}}" aria-label="Daily quota used">
         <div class="progress-fill progress-fill-{{$color}}" style="width:{{$pct}}%"></div>
     </div>
-    <div class="mt-1 text-xs text-secondary text-right">{{$pct}}% used</div>
+    <div class="quota-foot">{{$pct}}% used</div>
 </div>
 {{else}}
-<div class="card p-4 text-sm text-secondary">
-    <span class="flex items-center gap-2">
-        <span class="text-secondary">&infin;</span> No daily quota configured
-    </span>
+<div class="quota-card quota-card-empty">
+    <span class="quota-infinity" aria-hidden="true">&infin;</span>
+    <span>No daily quota configured</span>
 </div>
 {{end}}
 {{end}}

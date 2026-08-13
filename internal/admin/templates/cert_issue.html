@@ -1,56 +1,59 @@
 {{define "cert_issue"}}
 {{template "base" .}}
-<div class="page-header">
-    <div>
+<header class="page-header">
+    <div class="page-heading">
         <a href="/tenants/{{.Content.Tenant.ID}}/certificates" class="eyebrow">
-            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" style="width:0.85rem;height:0.85rem"><path d="M15 18l-6-6 6-6"/></svg>
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M15 18l-6-6 6-6"/></svg>
             Certificates
         </a>
-        <h1 class="page-title">Issue certificate · {{.Content.Tenant.Name}}</h1>
+        <h1 class="page-title">Issue certificate &middot; {{.Content.Tenant.Name}}</h1>
     </div>
-</div>
+</header>
 
 {{if not .Content.CAEnabled}}
-<div class="alert alert-info mb-4">
-    CA integration is disabled. Certificate issuance requires <code>CA_ENABLED=true</code> and <code>CA_*</code> environment variables.
+<div class="notice notice-warning" role="note">
+    <span class="notice-icon" aria-hidden="true">&#x26a0;&#xfe0f;</span>
+    <div>
+        <p class="notice-title">CA integration is disabled</p>
+        <p class="notice-detail">Certificate issuance requires <code>CA_ENABLED=true</code> and <code>CA_*</code> environment variables.</p>
+    </div>
 </div>
-{{end}}
-
+{{else}}
 <div id="download-link"></div>
 
-<div class="card mb-6">
-    <div class="card-header">
-        <span class="font-semibold">Submit CSR (preferred)</span>
-    </div>
-    <div class="card-body">
-        <p class="text-sm text-secondary mb-4">
+<section class="grouped-list" aria-label="Submit CSR">
+    <h2 class="grouped-list-header">Submit CSR <span class="grouped-list-note">preferred</span></h2>
+    <div class="grouped-list-body form-section">
+        <p class="form-section-note">
             Paste a PEM-encoded Certificate Signing Request. Use <code>openssl req</code> or a similar
             tool to generate the keypair and CSR on the device.
         </p>
         <form hx-post="/tenants/{{.Content.Tenant.ID}}/certificates" hx-target="#cert-list" hx-swap="beforeend">
-            <div class="mb-3">
-                <textarea name="csr" rows="6" placeholder="-----BEGIN CERTIFICATE REQUEST-----
+            <div class="form-field">
+                <label for="csr">Certificate Signing Request</label>
+                <textarea id="csr" name="csr" rows="6" placeholder="-----BEGIN CERTIFICATE REQUEST-----
 ...
 -----END CERTIFICATE REQUEST-----" required></textarea>
             </div>
-            <button type="submit" class="btn btn-primary">Issue Certificate</button>
+            <div class="form-actions">
+                <button type="submit" class="btn btn-tinted">Issue Certificate</button>
+            </div>
         </form>
     </div>
-</div>
+</section>
 
-<div class="card">
-    <div class="card-header">
-        <span class="font-semibold">Server-side key generation</span>
-    </div>
-    <div class="card-body">
-        <p class="text-sm text-secondary mb-4">
+<section class="grouped-list" aria-label="Server-side key generation">
+    <h2 class="grouped-list-header">Server-side key generation</h2>
+    <div class="grouped-list-body form-section">
+        <p class="form-section-note">
             Generate a keypair server-side. The private key is available for one-time download after issuance.
             Use this when you cannot generate keys on the target device.
         </p>
         <button hx-post="/tenants/{{.Content.Tenant.ID}}/certificates/keygen"
             hx-target="#download-link" hx-swap="innerHTML"
-            class="btn btn-primary">Generate Keypair &amp; Issue</button>
+            class="btn btn-tinted">Generate Keypair &amp; Issue</button>
     </div>
-</div>
+</section>
+{{end}}
 {{template "base_end" .}}
 {{end}}

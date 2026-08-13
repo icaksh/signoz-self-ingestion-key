@@ -1,14 +1,14 @@
 {{define "tenant_row"}}
 {{if .Tenant.APIKey}}
 <tr class="key-reveal-row" id="key-reveal-{{.Tenant.ID}}">
-    <td colspan="5" class="px-6 py-4">
+    <td>
         <div class="key-reveal">
             <div class="key-reveal-title">API key created &mdash; copy it now</div>
             <div class="key-reveal-warning">This key is shown once. It will not be displayed again. Store it somewhere safe.</div>
             <div class="key-reveal-code">{{.Tenant.APIKey}}</div>
             <div class="key-reveal-actions">
-                <button onclick="copyKey('{{.Tenant.APIKey}}')" class="btn btn-success btn-sm" type="button">Copy to clipboard</button>
-                <button onclick="this.closest('.key-reveal-row').remove()" class="btn btn-ghost btn-sm" type="button">I have saved this key</button>
+                <button data-key="{{.Tenant.APIKey}}" onclick="copyKey(this.dataset.key)" class="btn btn-tinted btn-sm" type="button">Copy to clipboard</button>
+                <button onclick="this.closest('.key-reveal-row').remove()" class="btn btn-gray btn-sm" type="button">I have saved this key</button>
             </div>
         </div>
     </td>
@@ -16,43 +16,43 @@
 {{end}}
 <tr id="tenant-{{.Tenant.ID}}">
     <td>
-        <div class="font-semibold">{{.Tenant.Name}}</div>
-        {{if .Tenant.Description}}<div class="text-xs text-secondary">{{.Tenant.Description}}</div>{{end}}
-    </td>
-    <td>
-        <div class="key-prefix">{{.Tenant.KeyPrefix}}</div>
-        <div class="meta-list mt-1">
-            {{if .Tenant.RateLimitRPS}}<span class="meta-chip">{{.Tenant.RateLimitRPS}} rps</span>{{else}}<span class="meta-chip">Unlimited</span>{{end}}
-            {{if .Tenant.BurstBytes}}<span>&middot;</span><span class="meta-chip">{{megaBytes .Tenant.BurstBytes}} MB/s burst</span>{{end}}
-            {{if .Tenant.DailyByteQuota}}<span>&middot;</span><span class="meta-chip">{{megaBytes .Tenant.DailyByteQuota}} MB/day</span>{{end}}
-        </div>
-    </td>
-    <td class="text-nowrap">
-        {{if .ExpiringCount}}
-        <span class="badge badge-warning badge-xs">{{.ExpiringCount}} expiring</span>
-        {{else}}
-        <span class="text-xs text-secondary">&mdash;</span>
-        {{end}}
-    </td>
-    <td>
-        {{if .Tenant.Active}}
-        <span class="badge badge-success">Active</span>
-        {{else}}
-        <span class="badge badge-danger">Inactive</span>
-        {{end}}
-    </td>
-    <td>
-        <div class="flex items-center justify-end gap-1 flex-wrap">
-            <a href="/tenants/{{.Tenant.ID}}/usage" class="btn btn-ghost btn-sm">Usage</a>
-            <a href="/tenants/{{.Tenant.ID}}/certificates" class="btn btn-ghost btn-sm">Certs</a>
-            <button hx-get="/tenants/{{.Tenant.ID}}/edit" hx-target="#form-area" hx-swap="innerHTML"
-                class="btn btn-ghost btn-sm">Edit</button>
-            <button hx-post="/tenants/{{.Tenant.ID}}/regenerate" hx-target="#tenant-{{.Tenant.ID}}" hx-swap="outerHTML"
-                hx-confirm="true" data-confirm-name="API key for {{.Tenant.Name}}"
-                class="btn btn-ghost btn-sm" style="color:var(--warning)">Revoke Key</button>
-            <button hx-delete="/tenants/{{.Tenant.ID}}" hx-target="#tenant-{{.Tenant.ID}}" hx-swap="outerHTML"
-                hx-confirm="true" data-confirm-name="tenant {{.Tenant.Name}}"
-                class="btn btn-ghost btn-sm" style="color:var(--danger)">Delete</button>
+        <div class="tenant-row">
+            <div class="tenant-identity">
+                <div class="tenant-name">{{.Tenant.Name}}</div>
+                {{if .Tenant.Description}}<div class="tenant-desc">{{.Tenant.Description}}</div>{{end}}
+            </div>
+            <div class="tenant-meta">
+                <span class="key-prefix">{{.Tenant.KeyPrefix}}</span>
+                <div class="meta-list">
+                    {{if .Tenant.RateLimitRPS}}<span class="meta-chip">{{.Tenant.RateLimitRPS}} rps</span>{{else}}<span class="meta-chip">Unlimited</span>{{end}}
+                    {{if .Tenant.BurstBytes}}<span class="meta-chip">{{megaBytes .Tenant.BurstBytes}} MB/s burst</span>{{end}}
+                    {{if .Tenant.DailyByteQuota}}<span class="meta-chip">{{megaBytes .Tenant.DailyByteQuota}} MB/day</span>{{end}}
+                </div>
+            </div>
+            <div class="tenant-status">
+                {{if .ExpiringCount}}
+                <span class="badge badge-warning badge-xs">{{.ExpiringCount}} expiring</span>
+                {{else}}
+                <span class="muted">&mdash;</span>
+                {{end}}
+                {{if .Tenant.Active}}
+                <span class="badge badge-success">Active</span>
+                {{else}}
+                <span class="badge badge-danger">Inactive</span>
+                {{end}}
+            </div>
+            <div class="tenant-actions">
+                <a href="/tenants/{{.Tenant.ID}}/usage" class="btn btn-text btn-sm">Usage</a>
+                <a href="/tenants/{{.Tenant.ID}}/certificates" class="btn btn-text btn-sm">Certs</a>
+                <button hx-get="/tenants/{{.Tenant.ID}}/edit" hx-target="#form-area" hx-swap="innerHTML"
+                    class="btn btn-text btn-sm">Edit</button>
+                <button hx-post="/tenants/{{.Tenant.ID}}/regenerate" hx-target="#tenant-{{.Tenant.ID}}" hx-swap="outerHTML"
+                    hx-confirm="true" data-confirm-name="API key for {{.Tenant.Name}}"
+                    class="btn btn-text btn-text-warning btn-sm">Revoke Key</button>
+                <button hx-delete="/tenants/{{.Tenant.ID}}" hx-target="#tenant-{{.Tenant.ID}}" hx-swap="outerHTML"
+                    hx-confirm="true" data-confirm-name="tenant {{.Tenant.Name}}"
+                    class="btn btn-text btn-text-danger btn-sm">Delete</button>
+            </div>
         </div>
     </td>
 </tr>

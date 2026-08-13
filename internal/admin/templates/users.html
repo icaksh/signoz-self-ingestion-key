@@ -1,57 +1,53 @@
 {{define "users"}}
 {{template "base" .}}
-<div class="page-header">
-    <div>
+<header class="page-header">
+    <div class="page-heading">
         <h1 class="page-title">Admin users</h1>
         <p class="page-subtitle">People who can sign in to this dashboard and manage tenants.</p>
     </div>
     <button onclick="document.getElementById('new-user-form').classList.toggle('hidden')"
-        class="btn btn-primary btn-sm">
+        class="btn btn-tinted btn-sm">
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round"><path d="M12 5v14M5 12h14"/></svg>
         Add user
     </button>
-</div>
+</header>
 
-<div id="new-user-form" class="card mb-6 hidden">
-    <div class="card-header">
-        <span class="font-semibold">New User</span>
-        <button onclick="this.closest('.card').classList.add('hidden')"
-            class="text-sm text-secondary hover:text-danger transition-colors">&times;</button>
+<div id="new-user-form" class="form-card hidden">
+    <div class="form-card-header">
+        <h3 class="form-card-title">New User</h3>
+        <button onclick="document.getElementById('new-user-form').classList.add('hidden')"
+            class="form-card-close" type="button" aria-label="Dismiss form">&times;</button>
     </div>
-    <div class="card-body">
+    <div class="form-card-body">
         <form hx-post="/users" hx-target="#user-list" hx-swap="innerHTML">
-            <div class="grid grid-cols-2 gap-4 mb-4">
-                <div>
+            <div class="form-grid form-grid-2">
+                <div class="form-field">
                     <label for="username">Username</label>
                     <input type="text" id="username" name="username" required>
                 </div>
-                <div>
+                <div class="form-field">
                     <label for="password">Password</label>
                     <input type="password" id="password" name="password" required
                         minlength="12" placeholder="Min 12 characters">
                 </div>
             </div>
-            <div class="flex justify-end">
-                <button type="submit" class="btn btn-primary btn-sm">Create User</button>
+            <div class="form-actions">
+                <button type="submit" class="btn btn-tinted btn-sm">Create User</button>
             </div>
         </form>
     </div>
 </div>
 
-<div class="card">
-    <table>
-        <thead>
-            <tr>
-                <th>Username</th>
-                <th>Created</th>
-                <th class="text-right">Actions</th>
-            </tr>
-        </thead>
-        <tbody id="user-list">
-            {{template "user_list" .Content}}
-        </tbody>
-    </table>
-</div>
+<section class="grouped-list" aria-label="Admin users">
+    <h2 class="grouped-list-header">Users</h2>
+    <div class="grouped-list-body">
+        <table class="grouped-table">
+            <tbody id="user-list">
+                {{template "user_list" .Content}}
+            </tbody>
+        </table>
+    </div>
+</section>
 {{template "base_end" .}}
 {{end}}
 
@@ -60,23 +56,28 @@
 {{range .Users}}
 <tr id="user-{{.ID}}">
     <td>
-        <div class="font-medium">{{.Username}}</div>
-    </td>
-    <td>
-        <span class="text-xs text-secondary">{{formatTime .CreatedAt}}</span>
-    </td>
-    <td>
-        <div class="flex justify-end">
-            <button hx-delete="/users/{{.ID}}" hx-target="#user-{{.ID}}" hx-swap="outerHTML"
-                hx-confirm="true" data-confirm-name="user {{.Username}}"
-                class="btn btn-ghost btn-sm" style="color:var(--danger)">Delete</button>
+        <div class="user-row">
+            <div class="user-identity">
+                <div class="user-avatar" aria-hidden="true">
+                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="8" r="4"/><path d="M4 21c0-4 3.6-6 8-6s8 2 8 6"/></svg>
+                </div>
+                <div class="user-name">{{.Username}}</div>
+            </div>
+            <div class="user-meta">
+                <span class="muted">Created {{formatTime .CreatedAt}}</span>
+            </div>
+            <div class="user-actions">
+                <button hx-delete="/users/{{.ID}}" hx-target="#user-{{.ID}}" hx-swap="outerHTML"
+                    hx-confirm="true" data-confirm-name="user {{.Username}}"
+                    class="btn btn-text btn-text-danger btn-sm">Delete</button>
+            </div>
         </div>
     </td>
 </tr>
 {{end}}
 {{else}}
 <tr>
-    <td colspan="3">
+    <td>
         <div class="empty-state">
             <div class="empty-state-title">No users found</div>
         </div>
