@@ -34,6 +34,7 @@ services:
     restart: unless-stopped
 
   proxy:
+    image: ${PROXY_IMAGE:-ghcr.io/icaksh/signoz-self-ingestion-key:latest}
     build: .
     container_name: ${PROXY_CONTAINER_NAME:-otlp-proxy}
     env_file:
