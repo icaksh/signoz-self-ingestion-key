@@ -1,0 +1,86 @@
+{{define "index"}}
+{{template "base" .}}
+<header class="page-header">
+    <div class="page-heading">
+        <h1 class="page-title">Tenants</h1>
+        <p class="page-subtitle">Each tenant gets an API key that authenticates its telemetry to the proxy.</p>
+    </div>
+    <a href="/tenants/new" class="btn btn-tinted btn-sm">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" aria-hidden="true"><path d="M12 5v14M5 12h14"/></svg>
+        New tenant
+    </a>
+</header>
+
+{{if .Flash}}
+    {{if eq .Flash.Kind "apikey"}}
+    <section class="key-reveal" aria-labelledby="key-reveal-title" role="status">
+        <div class="key-reveal-title" id="key-reveal-title">API key created &mdash; copy it now</div>
+        <div class="key-reveal-warning">This key is shown once. It will not be displayed again. Store it somewhere safe.</div>
+        <div class="key-reveal-code">{{.Flash.Key}}</div>
+        <div class="key-reveal-actions">
+            <button data-copy="{{.Flash.Key}}" class="btn btn-tinted btn-sm" type="button">Copy to clipboard</button>
+        </div>
+    </section>
+    {{end}}
+{{end}}
+
+<section class="grouped-list" aria-label="Tenants">
+    <h2 class="grouped-list-header">Tenants</h2>
+    <div class="grouped-list-body">
+        {{if .Tenants}}
+        <ul class="row-list">
+            {{$expiring := .ExpiringMap}}
+            {{range .Tenants}}
+            <li class="row-item" id="tenant-{{.ID}}">
+                <div class="row-main">
+                    <div class="row-identity">
+                        <span class="row-title">{{.Name}}</span>
+                        {{if .Description}}<span class="row-subtitle">{{.Description}}</span>{{end}}
+                    </div>
+                    <div class="row-meta">
+                        <span class="key-prefix">{{.KeyPrefix}}</span>
+                        {{if .RateLimitRPS}}<span class="chip">{{.RateLimitRPS}} rps</span>{{else}}<span class="chip">Unlimited rps</span>{{end}}
+                        {{if .BurstBytes}}<span class="chip">{{megaBytes .BurstBytes}} MB/s burst</span>{{end}}
+                        {{if .DailyByteQuota}}<span class="chip">{{megaBytes .DailyByteQuota}} MB/day</span>{{end}}
+                    </div>
+                    <div class="row-status">
+                        {{if index $expiring .ID}}<span class="badge badge-warning badge-xs">{{index $expiring .ID}} expiring</span>{{end}}
+                        {{if .Active}}<span class="badge badge-success">Active</span>{{else}}<span class="badge badge-danger">Inactive</span>{{end}}
+                    </div>
+                </div>
+                <div class="row-actions">
+                    <a href="/tenants/{{.ID}}/usage" class="btn btn-text btn-sm">Usage</a>
+                    <a href="/tenants/{{.ID}}/certificates" class="btn btn-text btn-sm">Certs</a>
+                    <a href="/tenants/{{.ID}}/edit" class="btn btn-text btn-sm">Edit</a>
+                    <form method="post" action="/tenants/{{.ID}}/regenerate"
+                          data-confirm-title="Regenerate API key?"
+                          data-confirm-message="All existing keys for {{.Name}} will stop working. This cannot be undone."
+                          data-confirm-action="Regenerate Key"
+                          data-confirm-variant="destructive">
+                        <input type="hidden" name="_csrf" value="{{$.CSRF}}">
+                        <button class="btn btn-text btn-text-warning btn-sm" type="submit">Revoke Key</button>
+                    </form>
+                    <form method="post" action="/tenants/{{.ID}}/delete"
+                          data-confirm-title="Delete tenant?"
+                          data-confirm-message="This removes {{.Name}}, its keys, certificates, and usage data. This cannot be undone."
+                          data-confirm-action="Delete"
+                          data-confirm-variant="destructive">
+                        <input type="hidden" name="_csrf" value="{{$.CSRF}}">
+                        <button class="btn btn-text btn-text-danger btn-sm" type="submit">Delete</button>
+                    </form>
+                </div>
+            </li>
+            {{end}}
+        </ul>
+        {{else}}
+        <div class="empty-state">
+            <div class="empty-state-icon" aria-hidden="true">&#x1f4e1;</div>
+            <div class="empty-state-title">No tenants configured</div>
+            <div class="empty-state-text">Create your first tenant to start receiving telemetry data.</div>
+            <a href="/tenants/new" class="btn btn-tinted">Create your first tenant</a>
+        </div>
+        {{end}}
+    </div>
+</section>
+{{template "base_end" .}}
+{{end}}

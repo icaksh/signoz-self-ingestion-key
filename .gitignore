@@ -1,0 +1,8 @@
+.env
+certs/
+secrets/
+backups/
+*.db
+*.db-shm
+*.db-wal
+.DS_Store

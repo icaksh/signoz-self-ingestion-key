@@ -1,0 +1,126 @@
+{{define "base"}}
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <meta name="color-scheme" content="light dark">
+    <meta name="theme-color" media="(prefers-color-scheme: light)" content="#f5f5f7">
+    <meta name="theme-color" media="(prefers-color-scheme: dark)" content="#000000">
+    <title>{{.Title}} · OTLP Proxy Admin</title>
+    <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24'%3E%3Crect width='24' height='24' rx='6' fill='%234f46e5'/%3E%3Cpath d='M6 12h2l2-5 4 10 2-5h2' fill='none' stroke='white' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E">
+    <link rel="stylesheet" href="/static/app.css">
+</head>
+<body>
+    <a href="#main" class="skip-link">Skip to content</a>
+    <div class="app-shell">
+        <aside class="sidebar" id="sidebar">
+            <div class="sidebar-brand">
+                <span class="brand-mark" aria-hidden="true">
+                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 12h3l2-6 4 12 2-6h5"/></svg>
+                </span>
+                <span class="sidebar-brand-text">
+                    <span class="sidebar-brand-name">OTLP Proxy</span>
+                    <span class="sidebar-brand-sub">Admin</span>
+                </span>
+            </div>
+            <nav class="sidebar-nav" aria-label="Sections">
+                <ul class="sidebar-list">
+                    <li>
+                        <a href="/" class="sidebar-link{{if eq .Section "tenants"}} is-active{{end}}"{{if eq .Section "tenants"}} aria-current="page"{{end}}>
+                            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="3" y="3" width="7" height="7" rx="1.5"/><rect x="14" y="3" width="7" height="7" rx="1.5"/><rect x="3" y="14" width="7" height="7" rx="1.5"/><rect x="14" y="14" width="7" height="7" rx="1.5"/></svg>
+                            <span>Tenants</span>
+                        </a>
+                    </li>
+                    <li>
+                        <a href="/users" class="sidebar-link{{if eq .Section "users"}} is-active{{end}}"{{if eq .Section "users"}} aria-current="page"{{end}}>
+                            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="8" r="4"/><path d="M4 21c0-4 3.6-6 8-6s8 2 8 6"/></svg>
+                            <span>Users</span>
+                        </a>
+                    </li>
+                </ul>
+            </nav>
+            <div class="sidebar-footer">
+                {{if gt .ExpiringCerts 0}}
+                <span class="sidebar-cert-badge" title="{{.ExpiringCerts}} certificate(s) expiring within 7 days">
+                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 3l7 3v5c0 4.5-3 8-7 10-4-2-7-5.5-7-10V6z"/><path d="M9 12l2 2 4-4"/></svg>
+                    <span class="sidebar-cert-badge-count">{{.ExpiringCerts}}</span>
+                    <span>expiring</span>
+                </span>
+                {{end}}
+                <form method="post" action="/logout" class="sidebar-logout">
+                    <input type="hidden" name="_csrf" value="{{.CSRF}}">
+                    <button class="sidebar-logout-btn" type="submit">
+                        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4"/><path d="M16 17l5-5-5-5"/><path d="M21 12H9"/></svg>
+                        <span>Log out</span>
+                    </button>
+                </form>
+            </div>
+        </aside>
+        <div class="sidebar-scrim" id="sidebar-scrim" hidden></div>
+        <div class="app-content">
+            <header class="mobile-bar">
+                <button id="sidebar-toggle" class="sidebar-toggle" type="button" aria-label="Open navigation" aria-expanded="false" aria-controls="sidebar">
+                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><path d="M4 7h16M4 12h16M4 17h16"/></svg>
+                </button>
+                <span class="mobile-bar-title">OTLP Proxy</span>
+            </header>
+            <main class="main" id="main">
+{{end}}
+
+{{define "base_end"}}
+            </main>
+        </div>
+    </div>
+    {{template "confirm_dialog" .}}
+    <script type="module" src="/static/app.js"></script>
+</body>
+</html>
+{{end}}
+
+{{define "confirm_dialog"}}
+<dialog id="confirm-dialog" class="confirm-dialog" role="alertdialog" aria-modal="true" aria-labelledby="confirm-title" aria-describedby="confirm-message">
+    <form method="dialog" class="confirm-dialog-inner">
+        <h2 class="confirm-dialog-title" id="confirm-title">Confirm action</h2>
+        <p class="confirm-dialog-message" id="confirm-message"></p>
+        <div class="confirm-dialog-actions">
+            <button id="confirm-cancel" class="btn btn-gray" type="button">Cancel</button>
+            <button id="confirm-submit" class="btn btn-tinted" type="submit" value="confirm">Confirm</button>
+        </div>
+    </form>
+</dialog>
+{{end}}
+
+{{define "error_page"}}
+{{template "base" .View}}
+<div class="error-page">
+    <div class="error-page-code">{{.StatusCode}}</div>
+    <h1 class="error-page-title">{{.Title}}</h1>
+    <p class="error-page-detail">{{.Detail}}</p>
+    <a href="/" class="btn btn-tinted">Return to dashboard</a>
+</div>
+{{template "base_end" .View}}
+{{end}}
+
+{{define "auth"}}
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <meta name="color-scheme" content="light dark">
+    <meta name="theme-color" media="(prefers-color-scheme: light)" content="#f5f5f7">
+    <meta name="theme-color" media="(prefers-color-scheme: dark)" content="#000000">
+    <title>{{.Title}} · OTLP Proxy Admin</title>
+    <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24'%3E%3Crect width='24' height='24' rx='6' fill='%234f46e5'/%3E%3Cpath d='M6 12h2l2-5 4 10 2-5h2' fill='none' stroke='white' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E">
+    <link rel="stylesheet" href="/static/app.css">
+</head>
+<body class="auth-body">
+    <main class="auth-main" id="main">
+{{end}}
+
+{{define "auth_end"}}
+    </main>
+</body>
+</html>
+{{end}}

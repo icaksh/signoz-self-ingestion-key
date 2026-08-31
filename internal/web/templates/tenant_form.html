@@ -1,0 +1,63 @@
+{{define "tenant_form"}}
+{{template "base" .}}
+<header class="page-header">
+    <div class="page-heading">
+        <a href="/" class="eyebrow">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M15 18l-6-6 6-6"/></svg>
+            All tenants
+        </a>
+        <h1 class="page-title">{{if .Editing}}Edit{{else}}New{{end}} tenant</h1>
+    </div>
+</header>
+
+<div class="form-card">
+    <div class="form-card-body">
+        <form method="post" action="{{if .Editing}}/tenants/{{.Tenant.ID}}{{else}}/tenants{{end}}">
+            <input type="hidden" name="_csrf" value="{{.CSRF}}">
+            <div class="form-grid form-grid-2">
+                <div class="form-field">
+                    <label for="name">Name</label>
+                    <input type="text" id="name" name="name" value="{{if .Editing}}{{.Tenant.Name}}{{end}}" required placeholder="e.g. hisv3-production">
+                </div>
+                <div class="form-field">
+                    <label for="description">Description</label>
+                    <input type="text" id="description" name="description" value="{{if .Editing}}{{.Tenant.Description}}{{end}}" placeholder="Optional description">
+                </div>
+            </div>
+            {{if .Editing}}
+            <div class="form-field">
+                <label class="checkbox-row">
+                    <input type="checkbox" name="active" {{if .Tenant.Active}}checked{{end}}>
+                    <span>Active</span>
+                </label>
+            </div>
+            {{end}}
+            <fieldset class="form-fieldset">
+                <legend>Rate limits <span class="legend-note">(optional, leave empty for unlimited)</span></legend>
+                <div class="form-grid form-grid-3">
+                    <div class="form-field">
+                        <label for="rate_limit_rps">Rate limit (rps)</label>
+                        <input type="number" id="rate_limit_rps" name="rate_limit_rps" min="0"
+                            value="{{if and .Editing .Tenant.RateLimitRPS}}{{.Tenant.RateLimitRPS}}{{end}}" placeholder="Unlimited">
+                    </div>
+                    <div class="form-field">
+                        <label for="burst_bytes">Burst (bytes/s)</label>
+                        <input type="number" id="burst_bytes" name="burst_bytes" min="0"
+                            value="{{if and .Editing .Tenant.BurstBytes}}{{.Tenant.BurstBytes}}{{end}}" placeholder="Unlimited">
+                    </div>
+                    <div class="form-field">
+                        <label for="daily_byte_quota">Daily quota (MB)</label>
+                        <input type="number" id="daily_byte_quota" name="daily_byte_quota" min="0"
+                            value="{{if and .Editing .Tenant.DailyByteQuota}}{{megaBytes .Tenant.DailyByteQuota}}{{end}}" placeholder="Unlimited">
+                    </div>
+                </div>
+            </fieldset>
+            <div class="form-actions">
+                <a href="/" class="btn btn-gray btn-sm">Cancel</a>
+                <button type="submit" class="btn btn-tinted btn-sm">{{if .Editing}}Save{{else}}Create{{end}}</button>
+            </div>
+        </form>
+    </div>
+</div>
+{{template "base_end" .}}
+{{end}}

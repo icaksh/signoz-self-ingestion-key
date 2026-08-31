@@ -1,0 +1,90 @@
+services:
+  step-ca:
+    image: ${STEP_CA_IMAGE:-smallstep/step-ca:0.30.2}
+    container_name: ${STEP_CA_CONTAINER_NAME:-otlp-step-ca}
+    environment:
+      DOCKER_STEPCA_INIT_NAME: ${STEP_CA_NAME:-OTLP Proxy CA}
+      DOCKER_STEPCA_INIT_DNS_NAMES: ${STEP_CA_DNS_NAMES:-step-ca,localhost,127.0.0.1}
+      DOCKER_STEPCA_INIT_PROVISIONER_NAME: ${CA_PROVISIONER_NAME:-otlp-proxy}
+      DOCKER_STEPCA_INIT_PASSWORD_FILE: /run/secrets/step_ca_password
+      DOCKER_STEPCA_INIT_ADDRESS: :9000
+    volumes:
+      - step-ca-data:/home/step
+      - ./secrets/step-ca-password:/run/secrets/step_ca_password:ro
+    ports:
+      - "${STEP_CA_BIND:-127.0.0.1}:${STEP_CA_PORT:-9000}:9000"
+    healthcheck:
+      test: ["CMD", "step", "ca", "health", "--ca-url", "https://127.0.0.1:9000", "--root", "/home/step/certs/root_ca.crt"]
+      interval: 5s
+      timeout: 5s
+      retries: 30
+      start_period: 10s
+    restart: unless-stopped
+
+  syslog-collector:
+    image: ${OTELCOL_IMAGE:-otel/opentelemetry-collector-contrib:0.157.0}
+    container_name: ${SYSLOG_COLLECTOR_CONTAINER_NAME:-otlp-syslog-collector}
+    command:
+      - --config=/etc/otelcol-contrib/config.yaml
+    environment:
+      SIGNOZ_ENDPOINT: ${SIGNOZ_ENDPOINT}
+      SIGNOZ_INGESTION_KEY: ${SIGNOZ_INGESTION_KEY:-}
+    volumes:
+      - ./config/otelcol-syslog.yaml:/etc/otelcol-contrib/config.yaml:ro
+    restart: unless-stopped
+
+  proxy:
+    build: .
+    container_name: ${PROXY_CONTAINER_NAME:-otlp-proxy}
+    env_file:
+      - .env
+    depends_on:
+      step-ca:
+        condition: service_healthy
+      syslog-collector:
+        condition: service_started
+    ports:
+      - "${PROXY_BIND:-0.0.0.0}:${PROXY_PORT:-4318}:4318"
+      - "${ADMIN_BIND:-127.0.0.1}:${ADMIN_PORT:-8080}:8080"
+      - "${SYSLOG_BIND:-0.0.0.0}:${SYSLOG_PORT:-6514}:6514"
+      - "${CA_RENEWAL_BIND:-0.0.0.0}:${CA_RENEWAL_PORT:-6543}:6543"
+    environment:
+      PROXY_PORT: "4318"
+      ADMIN_PORT: "8080"
+      ADMIN_LISTEN_ADDR: ":8080"
+      DB_PATH: /data/tenants.db
+
+      SYSLOG_ENABLED: ${SYSLOG_ENABLED:-false}
+      SYSLOG_LISTEN_ADDR: ":6514"
+      SYSLOG_SERVER_CERT_FILE: /certs/server.crt
+      SYSLOG_SERVER_KEY_FILE: /certs/server.key
+      SYSLOG_CLIENT_CA_FILE: /certs/client-ca.crt
+      SYSLOG_MAX_FRAME_BYTES: ${SYSLOG_MAX_FRAME_BYTES:-65536}
+      SYSLOG_MAX_CONNECTIONS: ${SYSLOG_MAX_CONNECTIONS:-1000}
+      SYSLOG_MAX_CONNS_PER_TENANT: ${SYSLOG_MAX_CONNS_PER_TENANT:-50}
+      SYSLOG_CONN_IDLE_TIMEOUT: ${SYSLOG_CONN_IDLE_TIMEOUT:-300s}
+      SYSLOG_COLLECTOR_ADDR: ${SYSLOG_COLLECTOR_ADDR:-syslog-collector:5140}
+
+      CA_ENABLED: "true"
+      CA_ENDPOINT: https://step-ca:9000
+      CA_PROVISIONER_NAME: ${CA_PROVISIONER_NAME:-otlp-proxy}
+      CA_PROVISIONER_KEY_FILE: /certs/provisioner.jwk
+      CA_ROOT_CERT_FILE: /certs/root.crt
+      CA_CERT_LIFETIME: ${CA_CERT_LIFETIME:-2160h}
+      CA_RENEWAL_LISTEN_ADDR: ":6543"
+      CA_EXTERNAL_HOSTNAME: ${CA_EXTERNAL_HOSTNAME}
+      CA_SYSLOG_RELAY_PORT: ${SYSLOG_PORT:-6514}
+    volumes:
+      - proxy-data:/data
+      - ./certs:/certs:ro
+    healthcheck:
+      test: ["CMD", "wget", "-q", "-O", "-", "http://127.0.0.1:4318/healthz"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 10s
+    restart: unless-stopped
+
+volumes:
+  proxy-data:
+  step-ca-data:

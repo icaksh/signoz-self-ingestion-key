@@ -1,0 +1,77 @@
+{{define "users"}}
+{{template "base" .}}
+<header class="page-header">
+    <div class="page-heading">
+        <h1 class="page-title">Admin users</h1>
+        <p class="page-subtitle">People who can sign in to this dashboard and manage tenants.</p>
+    </div>
+    <a href="#new-user-form" class="btn btn-tinted btn-sm">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" aria-hidden="true"><path d="M12 5v14M5 12h14"/></svg>
+        Add user
+    </a>
+</header>
+
+<div id="new-user-form" class="form-card">
+    <div class="form-card-header">
+        <h2 class="form-card-title">New user</h2>
+    </div>
+    <div class="form-card-body">
+        <form method="post" action="/users">
+            <input type="hidden" name="_csrf" value="{{.CSRF}}">
+            <div class="form-grid form-grid-2">
+                <div class="form-field">
+                    <label for="username">Username</label>
+                    <input type="text" id="username" name="username" required>
+                </div>
+                <div class="form-field">
+                    <label for="password">Password</label>
+                    <input type="password" id="password" name="password" required minlength="12" placeholder="Min 12 characters">
+                </div>
+            </div>
+            <div class="form-actions">
+                <button type="submit" class="btn btn-tinted btn-sm">Create user</button>
+            </div>
+        </form>
+    </div>
+</div>
+
+<section class="grouped-list" aria-label="Admin users">
+    <h2 class="grouped-list-header">Users</h2>
+    <div class="grouped-list-body">
+        {{if .Users}}
+        <ul class="row-list">
+            {{range .Users}}
+            <li class="row-item" id="user-{{.ID}}">
+                <div class="row-main">
+                    <div class="row-identity">
+                        <span class="user-avatar" aria-hidden="true">
+                            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="8" r="4"/><path d="M4 21c0-4 3.6-6 8-6s8 2 8 6"/></svg>
+                        </span>
+                        <span class="row-title">{{.Username}}</span>
+                    </div>
+                    <div class="row-meta">
+                        <span class="muted">Created {{formatTime .CreatedAt}}</span>
+                    </div>
+                </div>
+                <div class="row-actions">
+                    <form method="post" action="/users/{{.ID}}/delete"
+                          data-confirm-title="Delete user?"
+                          data-confirm-message="{{.Username}} will no longer be able to sign in. This cannot be undone."
+                          data-confirm-action="Delete"
+                          data-confirm-variant="destructive">
+                        <input type="hidden" name="_csrf" value="{{$.CSRF}}">
+                        <button class="btn btn-text btn-text-danger btn-sm" type="submit">Delete</button>
+                    </form>
+                </div>
+            </li>
+            {{end}}
+        </ul>
+        {{else}}
+        <div class="empty-state">
+            <div class="empty-state-title">No users found</div>
+        </div>
+        {{end}}
+    </div>
+</section>
+{{template "base_end" .}}
+{{end}}

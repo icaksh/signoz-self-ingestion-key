@@ -1,0 +1,34 @@
+# Signoz OTLP proxy — syslog relay configuration
+# Managed by install.sh — do not edit manually
+
+global(
+    DefaultNetstreamDriver="gtls"
+    DefaultNetstreamDriverCAFile="/etc/ssl/signoz/ca.crt"
+    DefaultNetstreamDriverCertFile="/etc/ssl/signoz/client.crt"
+    DefaultNetstreamDriverKeyFile="/etc/ssl/signoz/client.key"
+)
+
+ruleset(name="signozRelay") {
+    action(
+        type="omfwd"
+        Target="{{.Hostname}}"
+        Port="{{.Port}}"
+        Protocol="tcp"
+        TCP_Framing="octet-counted"
+        StreamDriver="gtls"
+        StreamDriverMode="1"
+        StreamDriverAuthMode="x509/name"
+        StreamDriverPermittedPeers="{{.Hostname}}"
+        template="RSYSLOG_SyslogProtocol23Format"
+        queue.type="LinkedList"
+        queue.filename="signoz"
+        queue.spoolDirectory="/var/spool/rsyslog"
+        queue.maxDiskSpace="1g"
+        queue.saveOnShutdown="on"
+        action.resumeRetryCount="-1"
+    )
+    stop
+}
+
+# Forward all messages to the signoz relay ruleset
+*.* call signozRelay

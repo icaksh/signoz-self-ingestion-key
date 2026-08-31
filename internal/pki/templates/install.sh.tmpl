@@ -1,0 +1,118 @@
+#!/bin/sh
+# Signoz Syslog Certificate Installer
+# Idempotent — safe to run multiple times
+set -eu
+
+CERT_DIR="/etc/ssl/signoz"
+RSYSLOG_CONF_DIR="/etc/rsyslog.d"
+BACKUP_DIR="${CERT_DIR}/.backup"
+SCRIPT_DIR=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
+NEW_CERT_DIR="${SCRIPT_DIR}"
+
+# --- preflight ---
+if [ "$(id -u)" -ne 0 ]; then
+    echo "ERROR: must run as root" >&2
+    exit 1
+fi
+
+# --- ensure rsyslog + GnuTLS output support ---
+rsyslog_gtls_module_present() {
+    for d in /usr/lib/rsyslog /usr/lib64/rsyslog /usr/lib/*/rsyslog /usr/local/lib/rsyslog; do
+        [ -f "${d}/lmnsd_gtls.so" ] && return 0
+    done
+    return 1
+}
+
+ensure_rsyslog_tls() {
+    if command -v rsyslogd >/dev/null 2>&1 && rsyslog_gtls_module_present; then
+        return 0
+    fi
+
+    echo "rsyslog GnuTLS support not detected; attempting to install it..."
+
+    if command -v apt-get >/dev/null 2>&1; then
+        apt-get update
+        DEBIAN_FRONTEND=noninteractive apt-get install -y rsyslog rsyslog-gnutls
+    elif command -v dnf >/dev/null 2>&1; then
+        dnf install -y rsyslog rsyslog-gnutls
+    elif command -v yum >/dev/null 2>&1; then
+        yum install -y rsyslog rsyslog-gnutls
+    else
+        echo "WARNING: automatic rsyslog GnuTLS package installation is only implemented for apt/dnf/yum." >&2
+        echo "Install rsyslog with its GnuTLS netstream module manually, then rerun this installer." >&2
+    fi
+
+    command -v rsyslogd >/dev/null 2>&1 || {
+        echo "ERROR: rsyslogd is not installed" >&2
+        exit 1
+    }
+
+    if ! rsyslog_gtls_module_present; then
+        echo "ERROR: rsyslog GnuTLS module (lmnsd_gtls.so) is unavailable." >&2
+        echo "Install your distribution's rsyslog GnuTLS/TLS package and rerun." >&2
+        exit 1
+    fi
+}
+
+ensure_rsyslog_tls
+
+# --- create directories ---
+mkdir -p "${CERT_DIR}" "${RSYSLOG_CONF_DIR}" "${BACKUP_DIR}" /var/spool/rsyslog
+
+# --- backup existing files ---
+TIMESTAMP=$(date +%Y%m%d%H%M%S)
+for f in ca.crt client.crt client.key; do
+    src="${CERT_DIR}/${f}"
+    if [ -f "${src}" ]; then
+        cp -p "${src}" "${BACKUP_DIR}/${f}.${TIMESTAMP}"
+    fi
+done
+if [ -f "${RSYSLOG_CONF_DIR}/60-signoz.conf" ]; then
+    cp -p "${RSYSLOG_CONF_DIR}/60-signoz.conf" "${BACKUP_DIR}/60-signoz.conf.${TIMESTAMP}"
+fi
+
+# --- install certificates ---
+install -m 0644 "${NEW_CERT_DIR}/ca.crt" "${CERT_DIR}/ca.crt"
+install -m 0644 "${NEW_CERT_DIR}/client.crt" "${CERT_DIR}/client.crt"
+if [ -f "${NEW_CERT_DIR}/client.key" ]; then
+    install -m 0600 "${NEW_CERT_DIR}/client.key" "${CERT_DIR}/client.key"
+fi
+
+# --- install rsyslog config ---
+install -m 0644 "${NEW_CERT_DIR}/60-signoz.conf" "${RSYSLOG_CONF_DIR}/60-signoz.conf"
+
+# --- validate rsyslog configuration ---
+echo "Validating rsyslog configuration..."
+if ! rsyslogd -N1 >/dev/null 2>&1; then
+    echo "ERROR: rsyslog configuration is invalid - rolling back" >&2
+
+    for f in ca.crt client.crt client.key; do
+        backup="${BACKUP_DIR}/${f}.${TIMESTAMP}"
+        if [ -f "${backup}" ]; then
+            cp -p "${backup}" "${CERT_DIR}/${f}"
+        fi
+    done
+
+    backup_conf="${BACKUP_DIR}/60-signoz.conf.${TIMESTAMP}"
+    if [ -f "${backup_conf}" ]; then
+        cp -p "${backup_conf}" "${RSYSLOG_CONF_DIR}/60-signoz.conf"
+    else
+        rm -f "${RSYSLOG_CONF_DIR}/60-signoz.conf"
+    fi
+
+    exit 1
+fi
+
+# --- restart rsyslog ---
+echo "Configuration valid - restarting rsyslog..."
+if command -v systemctl >/dev/null 2>&1; then
+    systemctl restart rsyslog
+elif command -v service >/dev/null 2>&1; then
+    service rsyslog restart
+else
+    echo "WARNING: could not restart rsyslog (no systemctl or service found)" >&2
+    echo "Please restart rsyslog manually"
+    exit 0
+fi
+
+echo "Signoz syslog relay installed successfully."

@@ -1,0 +1,27 @@
+# Generated/managed by the AIO installer.
+# OTLP Proxy strips RFC6587/RFC5425 framing and re-frames stamped RFC5424
+# messages as RFC 5425 octet-counted TCP before forwarding to this collector.
+# enable_octet_counting must stay on: newline-delimited framing would split
+# any message body containing a literal newline (e.g. a multi-line stack
+# trace) into headerless fragments.
+receivers:
+  syslog:
+    tcp:
+      listen_address: 0.0.0.0:5140
+      max_log_size: 1MiB
+      enable_octet_counting: true
+    protocol: rfc5424
+
+processors:
+  batch: {}
+
+exporters:
+  otlp_http/signoz:
+    endpoint: ${env:SIGNOZ_ENDPOINT}
+
+service:
+  pipelines:
+    logs:
+      receivers: [syslog]
+      processors: [batch]
+      exporters: [otlp_http/signoz]

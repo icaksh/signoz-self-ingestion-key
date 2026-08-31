@@ -1,0 +1,108 @@
+{{define "cert_list"}}
+{{template "base" .}}
+<header class="page-header">
+    <div class="page-heading">
+        <a href="/" class="eyebrow">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M15 18l-6-6 6-6"/></svg>
+            All tenants
+        </a>
+        <h1 class="page-title">Certificates &middot; {{.Tenant.Name}}</h1>
+        <p class="page-subtitle">Client certificates authenticate this tenant's syslog-over-mTLS ingestion.</p>
+    </div>
+    {{if .CAEnabled}}
+    <a href="/tenants/{{.Tenant.ID}}/certificates/new" class="btn btn-tinted btn-sm">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" aria-hidden="true"><path d="M12 5v14M5 12h14"/></svg>
+        Issue certificate
+    </a>
+    {{end}}
+</header>
+
+{{if not .CAEnabled}}
+<div class="notice notice-warning" role="note">
+    <span class="notice-icon" aria-hidden="true">&#x26a0;&#xfe0f;</span>
+    <div>
+        <p class="notice-title">CA integration is disabled</p>
+        <p class="notice-detail">Certificate issuance and renewal are unavailable. Set <code>CA_ENABLED=true</code> plus the <code>CA_*</code> variables to enable it.</p>
+    </div>
+</div>
+{{end}}
+
+{{if .Flash}}
+    {{if eq .Flash.Kind "download"}}
+    <section class="download-banner" role="status">
+        <div class="download-banner-title">{{.Flash.Message}}</div>
+        <a href="{{.Flash.URL}}" class="btn btn-tinted btn-sm">Download Bundle</a>
+    </section>
+    {{end}}
+{{end}}
+
+{{if .Certificates}}
+<section class="grouped-list" aria-label="Certificates">
+    <h2 class="grouped-list-header">Certificates</h2>
+    <div class="grouped-list-body">
+        <ul class="row-list">
+            {{range .Certificates}}
+            <li class="row-item" id="cert-{{.ID}}">
+                <div class="row-main">
+                    <div class="row-identity">
+                        <span class="cert-state-dot cert-state-{{if .RevokedAt.Valid}}revoked{{else if expired .NotAfter}}expired{{else if expiringSoon .NotAfter $.ExpiryWarnDays}}expiring{{else}}valid{{end}}" aria-hidden="true"></span>
+                        <span class="row-title">{{.SubjectCN}}</span>
+                    </div>
+                    <div class="row-meta cert-fingerprint" title="{{.FingerprintSHA256}}">
+                        <code>{{fingerprintFormat .FingerprintSHA256}}</code>
+                    </div>
+                    <div class="row-meta">
+                        <span class="muted">Serial</span> <code>{{fingerprintFormat .SerialNumber}}</code>
+                        <span class="muted">Expires</span> {{formatTime .NotAfter}}
+                        <span class="muted">Last seen</span> {{if .LastSeenAt.Valid}}{{formatTime .LastSeenAt.Time}}{{else}}&mdash;{{end}}
+                        {{if expiringSoon .NotAfter $.ExpiryWarnDays}}<span class="chip chip-warning">{{daysUntil .NotAfter}}d remaining</span>{{end}}
+                    </div>
+                    <div class="row-status">
+                        {{if .RevokedAt.Valid}}<span class="badge badge-danger">Revoked</span>
+                        {{else if expired .NotAfter}}<span class="badge badge-danger">Expired</span>
+                        {{else if expiringSoon .NotAfter $.ExpiryWarnDays}}<span class="badge badge-warning">Expiring</span>
+                        {{else}}<span class="badge badge-success">Valid</span>{{end}}
+                    </div>
+                </div>
+                <div class="row-actions">
+                    {{if $.CAEnabled}}{{if not .RevokedAt.Valid}}
+                    <form method="post" action="/tenants/{{$.Tenant.ID}}/certificates/{{.ID}}/renew"
+                          data-confirm-title="Renew certificate?"
+                          data-confirm-message="A new key and certificate will be issued for {{fingerprintShort .FingerprintSHA256}}."
+                          data-confirm-action="Renew"
+                          data-confirm-variant="default">
+                        <input type="hidden" name="_csrf" value="{{$.CSRF}}">
+                        <button class="btn btn-text btn-sm" type="submit">Renew</button>
+                    </form>
+                    {{end}}{{end}}
+                    {{if not .RevokedAt.Valid}}
+                    <form method="post" action="/tenants/{{$.Tenant.ID}}/certificates/{{.ID}}/revoke"
+                          data-confirm-title="Revoke certificate?"
+                          data-confirm-message="The device using {{fingerprintShort .FingerprintSHA256}} will no longer be able to connect."
+                          data-confirm-action="Revoke"
+                          data-confirm-variant="destructive">
+                        <input type="hidden" name="_csrf" value="{{$.CSRF}}">
+                        <button class="btn btn-text btn-text-danger btn-sm" type="submit">Revoke</button>
+                    </form>
+                    {{end}}
+                </div>
+            </li>
+            {{end}}
+        </ul>
+    </div>
+</section>
+{{else}}
+<section class="grouped-list" aria-label="Certificates">
+    <h2 class="grouped-list-header">Certificates</h2>
+    <div class="grouped-list-body">
+        <div class="empty-state">
+            <div class="empty-state-icon" aria-hidden="true">&#x1f510;</div>
+            <div class="empty-state-title">No certificates issued</div>
+            <div class="empty-state-text">Issue a client certificate to enable syslog ingestion for this tenant.</div>
+            {{if .CAEnabled}}<a href="/tenants/{{.Tenant.ID}}/certificates/new" class="btn btn-tinted">Issue Certificate</a>{{end}}
+        </div>
+    </div>
+</section>
+{{end}}
+{{template "base_end" .}}
+{{end}}

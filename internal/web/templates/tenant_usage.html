@@ -1,0 +1,81 @@
+{{define "tenant_usage"}}
+{{template "base" .}}
+<header class="page-header" data-tenant-id="{{.TenantID}}">
+    <div class="page-heading">
+        <a href="/" class="eyebrow">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M15 18l-6-6 6-6"/></svg>
+            All tenants
+        </a>
+        <h1 class="page-title">Usage &middot; {{.Tenant.Name}}</h1>
+        <p class="page-subtitle">Ingestion volume, request rate, and signal mix for this tenant.</p>
+    </div>
+    <div class="segmented" role="group" aria-label="Time range">
+        <button data-range="24h">24h</button>
+        <button data-range="7d" class="is-active" aria-pressed="true">7d</button>
+        <button data-range="30d">30d</button>
+    </div>
+</header>
+
+<div class="stat-grid">
+    <div class="stat">
+        <div class="stat-label">Total requests</div>
+        <div class="stat-value" id="stat-requests">&mdash;</div>
+    </div>
+    <div class="stat">
+        <div class="stat-label">Data ingested</div>
+        <div class="stat-value" id="stat-volume">&mdash;</div>
+    </div>
+    <div class="stat">
+        <div class="stat-label">Signal types</div>
+        <div class="stat-value" id="stat-signals">&mdash;</div>
+    </div>
+</div>
+
+{{$pct := percentOf .QuotaUsed .QuotaTotal}}
+{{$qcolor := "success"}}
+{{if gt $pct 90}}{{$qcolor = "danger"}}{{else if gt $pct 70}}{{$qcolor = "warning"}}{{end}}
+{{if gt .QuotaTotal 0}}
+<div class="quota-card">
+    <div class="quota-head">
+        <span class="quota-label">Daily Quota</span>
+        <span class="quota-values">
+            <span class="quota-used">{{megaBytes .QuotaUsed}} MB</span>
+            <span class="quota-sep">/</span>
+            <span class="quota-total">{{megaBytes .QuotaTotal}} MB</span>
+        </span>
+    </div>
+    <progress class="progress-track progress-{{$qcolor}}" max="100" value="{{$pct}}" aria-label="Daily quota used">{{$pct}}% used</progress>
+    <div class="quota-foot">{{$pct}}% used</div>
+</div>
+{{else}}
+<div class="quota-card quota-card-empty">
+    <span class="quota-infinity" aria-hidden="true">&infin;</span>
+    <span>No daily quota configured</span>
+</div>
+{{end}}
+
+<div class="chart-grid">
+    <section class="chart-card">
+        <h2 class="chart-card-title">Requests over time</h2>
+        <div class="chart-wrap"><svg id="requestsChart" role="img" aria-label="Requests over time"></svg></div>
+    </section>
+    <section class="chart-card">
+        <h2 class="chart-card-title">Data volume over time</h2>
+        <div class="chart-wrap"><svg id="volumesChart" role="img" aria-label="Data volume over time"></svg></div>
+    </section>
+</div>
+<section class="chart-card chart-card-full">
+    <h2 class="chart-card-title">Signal type breakdown</h2>
+    <div class="chart-wrap"><svg id="signalsChart" role="img" aria-label="Signal type breakdown"></svg></div>
+    <div class="chart-legend" id="signalsLegend" aria-hidden="true"></div>
+</section>
+
+<details class="chart-table">
+    <summary>View data as a table</summary>
+    <div id="chart-table-body">
+        <p class="muted">Select a range to load data.</p>
+    </div>
+</details>
+
+{{template "base_end" .}}
+{{end}}
